@@ -1,0 +1,3 @@
+# Calibrate impact against historical market reactions
+
+Impact Scores will be derived from short-window event studies, preserving each analogue's joint factor-shock vector and applying those scenarios to a versioned Reference Basket. Candidate event windows and basket constructions are selected on chronological development data and frozen before final evaluation. Expected reference-basket loss is mapped through a frozen historical distribution to severity deciles 1–10; this measures associated market reaction rather than proving causation, and Confidence gates action without altering conditional severity.
