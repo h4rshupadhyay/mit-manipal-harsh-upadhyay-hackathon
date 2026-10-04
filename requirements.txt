@@ -2,8 +2,11 @@ duckdb==1.2.2
 httpx==0.28.1
 hypothesis==6.168.3
 mypy==1.15.0
+numpy==2.5.3
 pydantic==2.10.6
+polars==1.44.2
 pytest==8.3.5
 ruff==0.9.10
+statsmodels==0.15.0
 torch==2.14.1
 transformers==5.18.0
