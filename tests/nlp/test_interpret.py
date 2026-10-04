@@ -161,3 +161,34 @@ def test_non_extractive_matcher_evidence_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="extractive"):
         interpret(source("Alpha Bank failed."), InventingMatcher(), sentiment(), event_model())
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("evidence", "Alpha"),
+        ("canonical_name", "Another canonical name"),
+        ("confidence", 0.5),
+        ("ambiguous", True),
+        ("candidate_entity_ids", ("bank-alpha", "bank-beta")),
+    ],
+)
+def test_tied_entity_links_have_stable_order_when_matcher_results_are_reversed(
+    field: str, value: object,
+) -> None:
+    baseline = link("Alpha Bank", "bank-alpha")
+    metadata = baseline.model_dump()
+    metadata[field] = value
+    variant = EntityLink.model_validate(metadata)
+    item = source("Alpha Bank failed.")
+
+    first = interpret(
+        item, FakeMatcher((baseline, variant)), sentiment(), event_model()
+    )
+    reversed_results = interpret(
+        item, FakeMatcher((variant, baseline)), sentiment(), event_model()
+    )
+
+    assert len(first[0].entity_links) == 2
+    assert set(first[0].entity_links) == {baseline, variant}
+    assert first == reversed_results

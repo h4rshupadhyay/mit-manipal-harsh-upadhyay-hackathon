@@ -62,7 +62,17 @@ def interpret(
         links = matcher.match(clause)
         if any(candidate.evidence not in clause for candidate in links):
             raise ValueError("entity match evidence must be extractive from the scored clause")
-        links.sort(key=lambda candidate: (clause.index(candidate.evidence), candidate.entity_id))
+        links.sort(
+            key=lambda candidate: (
+                clause.index(candidate.evidence),
+                candidate.entity_id,
+                candidate.evidence,
+                candidate.canonical_name,
+                candidate.confidence,
+                candidate.ambiguous,
+                candidate.candidate_entity_ids,
+            )
+        )
         sentiment = sentiment_model.score(clause)
         classification = event_model.classify(clause)
         identity = json.dumps(
