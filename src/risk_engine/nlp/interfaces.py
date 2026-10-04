@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -117,6 +119,7 @@ class ModelPin(DomainModel):
     revision: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}$")]
     tokenizer_sha256: Sha256Hex
     config_sha256: Sha256Hex
+    weights_sha256: Sha256Hex
 
 
 class ModelLock(DomainModel):
@@ -128,3 +131,39 @@ class ModelLock(DomainModel):
 def load_model_lock(path: Path) -> ModelLock:
     """Validate a lock without resolving revisions, downloading, or refreshing anything."""
     return ModelLock.model_validate_json(path.read_bytes())
+
+
+def snapshot_weights_sha256(snapshot: Path) -> str:
+    """Hash the sorted relative-name/exact-byte-hash manifest of local weights.
+
+    Recognizes single and sharded safetensors and pytorch_model*.bin files,
+    including their index manifests. Compact JSON makes filenames unambiguous;
+    streaming individual file hashes avoids loading model weights into memory.
+    """
+    artifacts = sorted(
+        (
+            path
+            for path in snapshot.rglob("*")
+            if path.is_file()
+            and any(
+                path.match(pattern)
+                for pattern in (
+                    "*.safetensors",
+                    "pytorch_model*.bin",
+                    "*.safetensors.index.json",
+                    "pytorch_model*.bin.index.json",
+                )
+            )
+        ),
+        key=lambda path: path.relative_to(snapshot).as_posix(),
+    )
+    if not any(path.suffix in (".safetensors", ".bin") for path in artifacts):
+        raise ValueError("local snapshot must contain recognized model weights")
+    manifest = []
+    for path in artifacts:
+        digest = hashlib.sha256()
+        with path.open("rb") as weight_file:
+            while chunk := weight_file.read(1024 * 1024):
+                digest.update(chunk)
+        manifest.append([path.relative_to(snapshot).as_posix(), digest.hexdigest()])
+    return hashlib.sha256(json.dumps(manifest, separators=(",", ":")).encode()).hexdigest()

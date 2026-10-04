@@ -9,7 +9,13 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from risk_engine.nlp.interfaces import EventModel, ModelLock, ModelPin, SentimentModel
+from risk_engine.nlp.interfaces import (
+    EventModel,
+    ModelLock,
+    ModelPin,
+    SentimentModel,
+    snapshot_weights_sha256,
+)
 
 
 class Tokenizer(Protocol):
@@ -35,11 +41,14 @@ def _verify_snapshot(pin: ModelPin, snapshot: Path) -> None:
     if snapshot.name != pin.revision:
         raise ValueError("local snapshot directory must match the pinned immutable revision")
     for filename, expected in (
-        ("config.json", pin.config_sha256), ("tokenizer.json", pin.tokenizer_sha256)
+        ("config.json", pin.config_sha256),
+        ("tokenizer.json", pin.tokenizer_sha256),
     ):
         actual = hashlib.sha256((snapshot / filename).read_bytes()).hexdigest()
         if actual != expected:
             raise ValueError(f"local snapshot {filename} hash does not match the model lock")
+    if snapshot_weights_sha256(snapshot) != pin.weights_sha256:
+        raise ValueError("local snapshot model weights hash does not match the model lock")
 
 
 class LocalModels:
@@ -119,9 +128,11 @@ class LocalModels:
             self._active = kind
         assert self._tokenizer is not None and self._classifier is not None
         labels = {index: label.lower() for index, label in self._classifier.labels.items()}
-        expected = {"positive", "negative", "neutral"} if kind == "sentiment" else {
-            "entailment", "neutral", "contradiction"
-        }
+        expected = (
+            {"positive", "negative", "neutral"}
+            if kind == "sentiment"
+            else {"entailment", "neutral", "contradiction"}
+        )
         if set(labels) != {0, 1, 2} or set(labels.values()) != expected:
             self.close()
             raise ValueError("model configuration must declare the expected semantic labels")
@@ -150,8 +161,11 @@ class _HuggingFaceTokenizer:
         if hypotheses is None:
             return self._tokenizer(text, return_tensors="pt", truncation=True)
         return self._tokenizer(
-            [text] * len(hypotheses), list(hypotheses), return_tensors="pt",
-            padding=True, truncation="only_first",
+            [text] * len(hypotheses),
+            list(hypotheses),
+            return_tensors="pt",
+            padding=True,
+            truncation="only_first",
         )
 
 

@@ -1,6 +1,7 @@
 """Offline adapter contracts; synthetic snapshots never represent acquired models."""
 
 import hashlib
+import json
 import os
 from pathlib import Path
 from typing import cast
@@ -19,9 +20,11 @@ class FakeTokenizer:
 
 class FakeModel:
     def __init__(self, event: bool, device: str, fail: bool) -> None:
-        self.labels = {0: "neutral", 1: "entailment", 2: "contradiction"} if event else {
-            0: "neutral", 1: "negative", 2: "positive"
-        }
+        self.labels = (
+            {0: "neutral", 1: "entailment", 2: "contradiction"}
+            if event
+            else {0: "neutral", 1: "negative", 2: "positive"}
+        )
         self.device = device
         self.fail = fail
 
@@ -41,8 +44,9 @@ class FakeBackend:
         self.fail = fail
         self.loads: list[tuple[str, str]] = []
 
-    def load(self, snapshot: Path, *, device: str, local_files_only: bool,
-             trust_remote_code: bool) -> tuple[FakeTokenizer, FakeModel]:
+    def load(
+        self, snapshot: Path, *, device: str, local_files_only: bool, trust_remote_code: bool
+    ) -> tuple[FakeTokenizer, FakeModel]:
         assert local_files_only and not trust_remote_code
         assert not self.active, "previous model must be released before loading another"
         self.active = True
@@ -65,9 +69,18 @@ def snapshots(tmp_path: Path) -> tuple[ModelLock, Path, Path]:
         path.mkdir(parents=True)
         for filename in ("config.json", "tokenizer.json"):
             (path / filename).write_text("{}")
-        pins.append(ModelPin(model_id=model_id, revision=revision,
-                             tokenizer_sha256=hashlib.sha256(b"{}").hexdigest(),
-                             config_sha256=hashlib.sha256(b"{}").hexdigest()))
+        (path / "model.safetensors").write_bytes(b"synthetic weights")
+        manifest = [["model.safetensors", hashlib.sha256(b"synthetic weights").hexdigest()]]
+        digest = hashlib.sha256(json.dumps(manifest, separators=(",", ":")).encode()).hexdigest()
+        pins.append(
+            ModelPin(
+                model_id=model_id,
+                revision=revision,
+                tokenizer_sha256=hashlib.sha256(b"{}").hexdigest(),
+                config_sha256=hashlib.sha256(b"{}").hexdigest(),
+                weights_sha256=digest,
+            )
+        )
         paths.append(path)
     return ModelLock(schema_version="1.0.0", sentiment=pins[0], event=pins[1]), paths[0], paths[1]
 
@@ -98,7 +111,8 @@ def test_gpu_failure_reloads_exact_snapshot_on_cpu(snapshots: tuple[ModelLock, P
 
 @pytest.mark.parametrize("filename", ["config.json", "tokenizer.json"])
 def test_rejects_changed_snapshot_bytes(
-    snapshots: tuple[ModelLock, Path, Path], filename: str,
+    snapshots: tuple[ModelLock, Path, Path],
+    filename: str,
 ) -> None:
     lock, sentiment, event = snapshots
     (sentiment / filename).write_text("changed")
@@ -114,6 +128,24 @@ def test_rejects_wrong_snapshot_revision(snapshots: tuple[ModelLock, Path, Path]
         LocalModels(lock, wrong, event, backend=FakeBackend())
 
 
+@pytest.mark.parametrize("change", ["modify", "delete", "add"])
+def test_rejects_tampered_weight_artifacts(
+    snapshots: tuple[ModelLock, Path, Path],
+    change: str,
+) -> None:
+    lock, sentiment, event = snapshots
+    models = LocalModels(lock, sentiment, event, backend=FakeBackend())
+    models.sentiment.score("Profit increased")
+    if change == "modify":
+        (sentiment / "model.safetensors").write_bytes(b"altered weights")
+    elif change == "delete":
+        (sentiment / "model.safetensors").unlink()
+    else:
+        (sentiment / "pytorch_model.bin").write_bytes(b"other weights")
+    with pytest.raises(ValueError, match="weight"):
+        models.sentiment.score("Profit increased")
+
+
 def test_rejects_changed_snapshot_between_calls(snapshots: tuple[ModelLock, Path, Path]) -> None:
     lock, sentiment, event = snapshots
     models = LocalModels(lock, sentiment, event, backend=FakeBackend())
@@ -127,10 +159,15 @@ def test_partial_load_failure_releases_resources_without_cpu_retry(
     snapshots: tuple[ModelLock, Path, Path],
 ) -> None:
     class BrokenBackend(FakeBackend):
-        def load(self, snapshot: Path, *, device: str, local_files_only: bool,
-                 trust_remote_code: bool) -> tuple[FakeTokenizer, FakeModel]:
-            result = super().load(snapshot, device=device, local_files_only=local_files_only,
-                                  trust_remote_code=trust_remote_code)
+        def load(
+            self, snapshot: Path, *, device: str, local_files_only: bool, trust_remote_code: bool
+        ) -> tuple[FakeTokenizer, FakeModel]:
+            result = super().load(
+                snapshot,
+                device=device,
+                local_files_only=local_files_only,
+                trust_remote_code=trust_remote_code,
+            )
             if snapshot.parent.name == "sentiment":
                 raise ValueError("invalid local model configuration")
             return result

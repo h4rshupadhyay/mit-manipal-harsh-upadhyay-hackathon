@@ -1,7 +1,8 @@
 """Resolve supplied local snapshots into a new lock; never contact a model registry.
 
 Snapshot directories must be named by their immutable 40-character revision and
-contain config.json and tokenizer.json. Hashes cover the exact bytes of those files.
+contain config.json, tokenizer.json, and recognized model weight artifacts.
+Hashes cover exact config/tokenizer bytes and a sorted filename/byte-hash weight manifest.
 Local adapters are responsible for verifying these hashes before loading a model.
 """
 
@@ -11,7 +12,7 @@ import argparse
 import hashlib
 from pathlib import Path
 
-from risk_engine.nlp.interfaces import ModelLock, ModelPin
+from risk_engine.nlp.interfaces import ModelLock, ModelPin, snapshot_weights_sha256
 
 
 def pin_snapshot(model_id: str, snapshot: Path) -> ModelPin:
@@ -22,6 +23,7 @@ def pin_snapshot(model_id: str, snapshot: Path) -> ModelPin:
         revision=revision,
         tokenizer_sha256=hashlib.sha256((snapshot / "tokenizer.json").read_bytes()).hexdigest(),
         config_sha256=hashlib.sha256((snapshot / "config.json").read_bytes()).hexdigest(),
+        weights_sha256=snapshot_weights_sha256(snapshot),
     )
 
 

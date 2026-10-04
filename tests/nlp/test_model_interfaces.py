@@ -1,3 +1,4 @@
+import hashlib
 import json
 import math
 import subprocess
@@ -75,6 +76,7 @@ def lock_payload() -> dict[str, object]:
         "revision": "a" * 40,
         "tokenizer_sha256": "b" * 64,
         "config_sha256": "c" * 64,
+        "weights_sha256": "d" * 64,
     }
     return {"schema_version": "1.0.0", "sentiment": dict(model), "event": dict(model)}
 
@@ -96,6 +98,7 @@ def test_load_immutable_lock(tmp_path: Path) -> None:
         ("revision", ""),
         ("tokenizer_sha256", ""),
         ("config_sha256", "bad"),
+        ("weights_sha256", ""),
     ],
 )
 def test_reject_mutable_or_incomplete_lock(tmp_path: Path, field: str, value: str) -> None:
@@ -109,11 +112,12 @@ def test_reject_mutable_or_incomplete_lock(tmp_path: Path, field: str, value: st
         load_model_lock(path)
 
 
-def test_missing_hash_rejected(tmp_path: Path) -> None:
+@pytest.mark.parametrize("field", ["tokenizer_sha256", "weights_sha256"])
+def test_missing_hash_rejected(tmp_path: Path, field: str) -> None:
     payload = lock_payload()
     event = payload["event"]
     assert isinstance(event, dict)
-    del event["tokenizer_sha256"]
+    del event[field]
     path = tmp_path / "lock.json"
     path.write_text(json.dumps(payload))
     with pytest.raises(ValidationError):
@@ -125,6 +129,19 @@ def test_lock_script_hashes_local_snapshots_and_refuses_overwrite(tmp_path: Path
     snapshot.mkdir()
     (snapshot / "config.json").write_bytes(b"{}")
     (snapshot / "tokenizer.json").write_bytes(b"{}")
+    files = {
+        "pytorch_model-00001-of-00002.bin": b"first bin shard",
+        "pytorch_model-00002-of-00002.bin": b"second bin shard",
+        "model.safetensors": b"single safetensors",
+        "model-00001-of-00002.safetensors": b"first safe shard",
+        "model-00002-of-00002.safetensors": b"second safe shard",
+        "model.safetensors.index.json": b'{"weight_map":{}}',
+        "pytorch_model.bin.index.json": b'{"weight_map":{}}',
+        "nested/pytorch_model.bin": b"nested weights",
+    }
+    for name, content in reversed(list(files.items())):
+        (snapshot / name).parent.mkdir(parents=True, exist_ok=True)
+        (snapshot / name).write_bytes(content)
     output = tmp_path / "models.lock.json"
     command = [
         sys.executable,
@@ -147,6 +164,11 @@ def test_lock_script_hashes_local_snapshots_and_refuses_overwrite(tmp_path: Path
         "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
     )
     assert lock.sentiment.tokenizer_sha256 == lock.sentiment.config_sha256
+    manifest = [
+        [name, hashlib.sha256(content).hexdigest()] for name, content in sorted(files.items())
+    ]
+    expected = hashlib.sha256(json.dumps(manifest, separators=(",", ":")).encode()).hexdigest()
+    assert lock.sentiment.weights_sha256 == expected
     assert subprocess.run(command, capture_output=True).returncode != 0
 
 
