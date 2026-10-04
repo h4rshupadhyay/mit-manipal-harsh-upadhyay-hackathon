@@ -48,3 +48,20 @@ unavailable check explicitly.
 
 Commit one coherent task at a time using the commit message from the approved
 plan when one is provided.
+
+## Efficient execution and resumption
+
+- Run tests, formatters, type checks, Git inspection, staging, and commits
+  directly with tools. Do not delegate shell-only work to a model.
+- Route scoped mechanical review or localized edits to Luna, implementation and
+  nontrivial debugging to Sol, and ambiguous architecture or high-stakes
+  reasoning to Astra. Start with the lightest suitable model and escalate only
+  after a concrete failure or unresolved ambiguity.
+- Keep context narrow: read the active task brief and changed interfaces, run
+  targeted red-green tests, and run the full applicable gate once before
+  committing. Run independent checks in parallel and prefer quiet output when
+  detailed output is not needed.
+- Treat commits and `.superpowers/sdd/<plan>/progress.md` as the resume record.
+  Before a limit-driven stop, record the active task, base commit, red-green
+  state, unresolved review findings, and exact next command. On resume, read
+  that record, `git status`, and recent commits; do not repeat completed tasks.
