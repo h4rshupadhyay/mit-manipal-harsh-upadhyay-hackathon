@@ -1,0 +1,23 @@
+[versions]
+schema = "1.0.0"
+model = "models-bootstrap-v1"
+calibration = "calibration-bootstrap-v1"
+valuation_rules = "valuation-v1"
+
+[taxonomy]
+event_classes = [
+  "Geopolitical",
+  "Macroeconomic/Monetary",
+  "Credit/Default",
+  "Regulatory/Legal",
+  "Operational/Cyber",
+  "Corporate Action",
+  "Climate/Natural Disaster",
+  "Other/Uncertain",
+]
+
+[runtime]
+offline_replay = true
+
+[policy]
+impact_threshold = 8
