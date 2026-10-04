@@ -4,7 +4,7 @@
 
 **Goal:** Build a local, reproducible NLP Risk Engine that converts news and social text into evidence-backed Risk Signals and runs transparent stress tests on a synthetic wholesale-banking portfolio.
 
-**Architecture:** One local Python deployment contains four deep modules: Data, Risk Engine, Stress Engine, and Backtest. External providers write immutable snapshots; all judged analysis replays explicit snapshots through pinned local models, historically calibrated joint scenarios, and deterministic valuation rules. FastAPI exposes machine-readable signals and Streamlit presents Signal Monitor, Portfolio Stress, and Backtest Evidence views.
+**Architecture:** One local Python deployment contains four deep modules: Data, Risk Engine, Stress Engine, and Backtest. External providers write immutable snapshots; judged analysis replays explicit snapshots through pinned local models, historically calibrated joint scenarios, and deterministic valuation rules. FastAPI exposes machine-readable signals and Streamlit presents Signal Monitor, Portfolio Stress, and Backtest Evidence views.
 
 **Tech Stack:** Python 3.11, Pydantic 2, FastAPI, Streamlit, DuckDB, Polars, NumPy, SciPy, statsmodels OLS, scikit-learn, PyTorch/Transformers, Plotly, HTTPX, pytest, Hypothesis, Ruff, mypy.
 
@@ -19,10 +19,20 @@
 - Emit Sentiment Score `[-1,1]`, one of eight Event Classes, Impact Score `1..10`, calibrated Confidence, evidence, provenance, and version metadata.
 - Derive Impact Score from event studies, complete historical Joint Shock Vectors, a versioned Reference Basket, and a frozen empirical loss distribution.
 - Keep Impact Score, Confidence, Portfolio Materiality, and Action Priority separate.
-- Retain the problem-statement severity trigger `impact_score >= 8`; select the Confidence threshold and economic materiality floor only on chronological development data.
+- Retain `impact_score >= 8`; select the Confidence threshold and economic materiality floor only on chronological development data.
 - Use deterministic valuation rules and explicit factor units; unsupported exposure is disclosed, never treated as zero risk.
-- Commit redistributable demo CSV/JSON under `data/`; do not commit model weights, secrets, large raw downloads, or third-party text without redistribution rights. Use an MIT project license and document non-commercial/evaluation-only dataset restrictions separately.
-- Every task ends with its focused tests and a commit; run the full quality suite before milestones and final handoff.
+- Commit redistributable demo CSV/JSON under `data/`; keep model weights, secrets, large raw downloads, and restricted third-party text out of Git.
+- Use an MIT project license and document non-commercial/evaluation-only dataset restrictions separately.
+
+## Commit Discipline
+
+- One task below equals one reviewable commit: one coherent behavior or interface plus its tests.
+- Complete the red-green cycle locally before committing. Every commit must leave all existing tests green.
+- Keep formatting and documentation changes with the behavior that requires them; otherwise give them their own explicitly requested task.
+- Use the listed outcome-oriented commit message. Add only the files named by that task.
+- When a task changes dependencies, pin direct dependencies in `pyproject.toml` and regenerate `requirements.txt` from the same exact pins before verification.
+- Run the focused command before every commit. Run `pytest -q && ruff check . && mypy src` at each phase gate and before final handoff.
+- Task 1 is the grandfathered foundation checkpoint already implemented before this incremental policy. Preserve its history; apply these boundaries from Task 2 onward.
 
 ## File Structure
 
@@ -42,583 +52,538 @@ src/risk_engine/risk/                  Risk Engine orchestration and trigger pol
 src/risk_engine/backtest/              temporal splits, metrics, locked evaluation
 src/risk_engine/api/                   FastAPI application
 src/risk_engine/dashboard/             Streamlit application and pure view models
-scripts/                               refresh, calibration, evaluation, demo launch
-data/demo/                             redistributable news/social replay inputs
-data/portfolio/                        synthetic portfolio CSV/JSON
-data/calibration/                      derived events, shocks, and frozen cutpoints
-data/manifests/                        provenance, licenses, hashes, versions
+scripts/                               acquisition, calibration, evaluation, demo
+data/                                  demo, portfolio, calibration, results, manifests
 tests/                                 package-mirrored unit and integration tests
 docs/                                  methodology, architecture, results, submission
 ```
 
 ## Review Focus
 
-- Duplicate or revised stories about one real-world event must cluster without double-counting while retaining every source reference; Task 2 pins this behavior.
-- After-close, weekend, and holiday publication timestamps must map to the declared next market session without future leakage; Task 5 pins this behavior.
-- Unknown or ambiguous entities must remain visible but abstain from automatic stress; Tasks 3 and 7 pin this behavior.
-- Invalid shock units and unsupported instruments must fail or reduce reported valuation coverage rather than silently produce zero loss; Task 4 pins this behavior.
-- Thin historical support must expose the back-off level and switch to visibly hypothetical provenance instead of claiming empirical calibration; Task 6 pins this behavior.
+- Duplicate or revised stories must cluster once while retaining every Source Item reference; Task 5 pins this.
+- After-close, weekend, and holiday timestamps must map to the next declared market session without leakage; Task 15 pins this.
+- Unknown or ambiguous entities must remain visible but abstain from automatic stress; Tasks 7, 10, and 24 pin this.
+- Invalid shock units and unsupported instruments must reject or reduce valuation coverage rather than produce zero loss; Tasks 11 and 14 pin this.
+- Thin historical support must expose its back-off level and visibly hypothetical provenance; Tasks 20 and 21 pin this.
 
 ---
 
+## Phase 1: Foundation
+
 ### Task 1: Project Foundation and Canonical Contracts
 
-**Files:**
-- Create: `pyproject.toml`
-- Create: `requirements.txt`
-- Create: `config/default.toml`
-- Create: `src/risk_engine/__init__.py`
-- Create: `src/risk_engine/domain.py`
-- Create: `src/risk_engine/config.py`
-- Create: `tests/test_domain.py`
-- Create: `tests/test_config.py`
+**Status:** Grandfathered checkpoint. Preserve the completed red-green-review history rather than rewriting it into artificial micro-commits.
 
-**Interfaces:**
-- Consumes: approved glossary in `CONTEXT.md`.
-- Produces: `SourceItem`, `MarketObservation`, `MarketSnapshot`, `EntityLink`, `InterpretedEvent`, `ImpactEstimate`, `RiskSignal`, `FactorShock`, `StressScenario`, `Position`, `Portfolio`, `StressResult`, `BacktestReport`, and `AppConfig`.
+**Files:** `AGENTS.md`, `.gitignore`, `pyproject.toml`, `requirements.txt`, `config/default.toml`, `src/risk_engine/__init__.py`, `src/risk_engine/domain.py`, `src/risk_engine/config.py`, `tests/test_domain.py`, `tests/test_config.py`.
 
-- [ ] **Step 1: Write failing contract tests**
+**Produces:** Canonical Pydantic records and `AppConfig.load(path: Path) -> AppConfig` with bounded scores, aware timestamps, explicit units, unique identifiers, complete versions, and cross-field invariants.
 
-Assert exact score bounds, timezone-aware timestamps, eight Event Classes plus `Other/Uncertain`, explicit shock units/types, unique IDs, and rejection of incomplete version metadata.
+- [ ] Verify: `pytest tests/test_domain.py tests/test_config.py -v && ruff check src tests && mypy src`
+- [ ] Completion: foundation commits exist and the verification command passes; do not create a duplicate commit.
 
-- [ ] **Step 2: Run the contract tests and confirm they fail**
+---
 
-Run: `pytest tests/test_domain.py tests/test_config.py -v`
-Expected: collection failure because `risk_engine.domain` and `risk_engine.config` do not exist.
+## Phase 2: Immutable Data
 
-- [ ] **Step 3: Add the package configuration and minimal Pydantic contracts**
+### Task 2: Snapshot Interfaces and Append-Only Store
 
-Use string enums for event class, source type, shock type, provenance method, and asset type. Use `Decimal` for currency/notional values and floats for normalized scores and market factors. `AppConfig.load(path: Path) -> AppConfig` reads TOML with the standard library and rejects unknown Event Class names or missing model/calibration versions. Generate `requirements.txt` from the locked direct dependencies in `pyproject.toml` so evaluators receive repeatable versions without committing a virtual environment.
+**Files:** Create `src/risk_engine/data/interfaces.py`, `src/risk_engine/data/duckdb_store.py`, `tests/data/test_snapshot_store.py`; modify `pyproject.toml`, `requirements.txt` for the pinned DuckDB dependency.
 
-- [ ] **Step 4: Run focused quality checks**
+**Interfaces:** Produces `ProviderRequest`, `RawEnvelope`, `SnapshotRef`, `SourceProvider.fetch(request) -> RawEnvelope`, and `DuckDbSnapshotStore.write/load`.
 
-Run: `pytest tests/test_domain.py tests/test_config.py -v && ruff check src tests && mypy src`
-Expected: all checks pass.
+- [ ] Write failing tests for canonical request serialization, SHA-256 preservation, append-only writes, byte-stable load, and incomplete-manifest rejection.
+- [ ] Run: `pytest tests/data/test_snapshot_store.py -v`; expect missing-module failures.
+- [ ] Implement the interfaces and DuckDB store; every envelope records provider, request, retrieval time, metadata, terms URL, and hash.
+- [ ] Verify: `pytest tests/data/test_snapshot_store.py tests/test_domain.py -v`.
+- [ ] Commit: `git add pyproject.toml requirements.txt src/risk_engine/data/interfaces.py src/risk_engine/data/duckdb_store.py tests/data/test_snapshot_store.py && git commit -m "feat: persist immutable source snapshots"`.
 
-- [ ] **Step 5: Commit**
+### Task 3: GDELT News Adapter
 
-```bash
-git add pyproject.toml requirements.txt config src/risk_engine tests/test_domain.py tests/test_config.py
-git commit -m "build: establish risk engine contracts"
-```
+**Files:** Create `src/risk_engine/data/gdelt.py`, `tests/data/test_gdelt.py`, `tests/fixtures/gdelt-response.json`; modify `pyproject.toml`, `requirements.txt` for pinned HTTPX.
 
-### Task 2: Immutable Data Module and Two Source Adapters
+**Interfaces:** Produces `GdeltProvider.fetch(request: ProviderRequest) -> RawEnvelope` and `normalize_gdelt(envelope) -> list[SourceItem]`.
 
-**Files:**
-- Create: `src/risk_engine/data/interfaces.py`
-- Create: `src/risk_engine/data/module.py`
-- Create: `src/risk_engine/data/duckdb_store.py`
-- Create: `src/risk_engine/data/gdelt.py`
-- Create: `src/risk_engine/data/social_csv.py`
-- Create: `src/risk_engine/data/clustering.py`
-- Create: `tests/data/test_data_module.py`
-- Create: `tests/data/test_gdelt.py`
-- Create: `tests/data/test_social_csv.py`
-- Create: `tests/data/test_clustering.py`
-- Create: `tests/fixtures/gdelt-response.json`
-- Create: `tests/fixtures/social.csv`
+- [ ] Write failing tests for request parameters, normalized fields, aware timestamps, provenance, HTTP 429, timeout, and schema errors using an injected `httpx.Client`.
+- [ ] Run: `pytest tests/data/test_gdelt.py -v`; expect import failure.
+- [ ] Implement explicit refresh only; normalization must not perform network access.
+- [ ] Verify: `pytest tests/data/test_gdelt.py tests/data/test_snapshot_store.py -v`.
+- [ ] Commit: `git add pyproject.toml requirements.txt src/risk_engine/data/gdelt.py tests/data/test_gdelt.py tests/fixtures/gdelt-response.json && git commit -m "feat: normalize GDELT news snapshots"`.
 
-**Interfaces:**
-- Consumes: `SourceItem`, provider and snapshot metadata from Task 1.
-- Produces: `SourceProvider.fetch(request: ProviderRequest) -> RawEnvelope`; `DataModule.refresh(provider, request) -> SnapshotRef`; `DataModule.replay(snapshot_id: str) -> list[SourceItem]`; `cluster_stories(items: Sequence[SourceItem]) -> list[StoryCluster]`.
+### Task 4: Historical Social CSV Adapter
 
-- [ ] **Step 1: Write failing adapter, snapshot, and clustering tests**
+**Files:** Create `src/risk_engine/data/social_csv.py`, `tests/data/test_social_csv.py`, `tests/fixtures/social.csv`.
 
-Cover byte-stable replay, hash/provenance preservation, GDELT normalization, social CSV normalization, HTTP 429/schema errors, and two revised/duplicated articles clustering as one event while retaining both Source Item IDs.
+**Interfaces:** Produces `SocialCsvProvider.fetch(request) -> RawEnvelope` and `normalize_social_csv(envelope) -> list[SourceItem]`.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [ ] Write failing tests for UTF-8 parsing, required source-row IDs, project-authored provenance, stable hashes, malformed rows, and news/social contract equivalence.
+- [ ] Run: `pytest tests/data/test_social_csv.py -v`; expect import failure.
+- [ ] Implement local-file replay with no implicit download or third-party raw-text export.
+- [ ] Verify: `pytest tests/data/test_social_csv.py tests/test_domain.py -v`.
+- [ ] Commit: `git add src/risk_engine/data/social_csv.py tests/data/test_social_csv.py tests/fixtures/social.csv && git commit -m "feat: replay social text through source contracts"`.
 
-Run: `pytest tests/data -v`
-Expected: imports fail because the Data Module does not exist.
+### Task 5: Deterministic Story Clustering
 
-- [ ] **Step 3: Implement the provider seam and DuckDB snapshot store**
+**Files:** Create `src/risk_engine/data/clustering.py`, `tests/data/test_clustering.py`; modify `config/default.toml`.
 
-`RawEnvelope` records provider, canonical request, retrieval time, response metadata, source-terms URL, and SHA-256. `DuckDbSnapshotStore.write(...) -> SnapshotRef` is append-only; `load` refuses incomplete manifests. GDELT accepts injected `httpx.Client`; social replay reads UTF-8 CSV with required source-row IDs.
+**Interfaces:** Produces `StoryCluster` and `cluster_stories(items: Sequence[SourceItem], config) -> list[StoryCluster]`.
 
-- [ ] **Step 4: Implement deterministic story clustering**
+- [ ] Write failing tests for URL normalization, exact-content matches, the frozen similarity/time rule, earliest event time, deterministic ordering, and duplicate/revised stories retaining all source IDs.
+- [ ] Run: `pytest tests/data/test_clustering.py -v`; expect import failure.
+- [ ] Implement clustering with configuration-defined thresholds and tie breaks.
+- [ ] Verify: `pytest tests/data/test_clustering.py tests/test_config.py -v`.
+- [ ] Commit: `git add src/risk_engine/data/clustering.py tests/data/test_clustering.py config/default.toml && git commit -m "feat: cluster duplicate stories deterministically"`.
 
-Normalize URLs and text, then cluster on content hash and a frozen similarity/time rule from configuration. Preserve all variants and choose the earliest valid publication time as the cluster event time.
+### Task 6: Data Module Orchestration
 
-- [ ] **Step 5: Run focused and full foundation tests**
+**Files:** Create `src/risk_engine/data/module.py`, `tests/data/test_data_module.py`.
 
-Run: `pytest tests/data tests/test_domain.py tests/test_config.py -v`
-Expected: all tests pass without network access.
+**Interfaces:** Produces `DataModule.refresh(provider, request) -> SnapshotRef` and `DataModule.replay(snapshot_id) -> list[SourceItem]`.
 
-- [ ] **Step 6: Commit**
+- [ ] Write failing tests for explicit refresh, offline replay, provider failure preserving old snapshots, and replay never contacting the network.
+- [ ] Run: `pytest tests/data/test_data_module.py -v`; expect import failure.
+- [ ] Implement orchestration only through Task 2 interfaces.
+- [ ] Verify phase gate: `pytest tests/data tests/test_domain.py tests/test_config.py -v && ruff check . && mypy src`.
+- [ ] Commit: `git add src/risk_engine/data/module.py tests/data/test_data_module.py && git commit -m "feat: orchestrate explicit refresh and offline replay"`.
 
-```bash
-git add src/risk_engine/data tests/data tests/fixtures
-git commit -m "feat: add immutable news and social ingestion"
-```
+---
 
-### Task 3: Local Entity, Sentiment, and Event Interpretation
+## Phase 3: Local NLP Interpretation
 
-**Files:**
-- Create: `src/risk_engine/nlp/interfaces.py`
-- Create: `src/risk_engine/nlp/entity_matcher.py`
-- Create: `src/risk_engine/nlp/local_models.py`
-- Create: `src/risk_engine/nlp/interpret.py`
-- Create: `scripts/lock_models.py`
-- Create: `config/models.lock.json`
-- Create: `tests/nlp/test_entity_matcher.py`
-- Create: `tests/nlp/test_interpret.py`
-- Create: `tests/nlp/test_local_models.py`
-- Create: `tests/fixtures/entity-catalog.csv`
+### Task 7: Portfolio Entity Matcher
 
-**Interfaces:**
-- Consumes: `SourceItem`, portfolio entity catalogue, eight-class taxonomy.
-- Produces: `EntityMatcher.match(text: str) -> list[EntityLink]`; `SentimentModel.score(text: str) -> SentimentResult`; `EventModel.classify(text: str) -> EventResult`; `interpret(item: SourceItem, ...) -> list[InterpretedEvent]`.
+**Files:** Create `src/risk_engine/nlp/entity_matcher.py`, `tests/nlp/test_entity_matcher.py`, `tests/fixtures/entity-catalog.csv`.
 
-- [ ] **Step 1: Write failing interpretation tests**
+**Interfaces:** Produces `EntityMatcher.match(text: str) -> list[EntityLink]`.
 
-Pin alias/cashtag matching, clause-local sentiment, `sentiment = P(positive) - P(negative)`, fixed event hypotheses, evidence spans, deterministic ordering, and ambiguous/unknown entity results that retain candidates but set `eligible_for_automatic_stress = false`.
+- [ ] Write failing tests for normalized aliases, exact identifiers, cashtags, boundaries, deterministic ordering, ambiguity, and unknown entities remaining visible but ineligible for automatic stress.
+- [ ] Run: `pytest tests/nlp/test_entity_matcher.py -v`; expect import failure.
+- [ ] Implement catalogue-only matching with no network resolution.
+- [ ] Verify: `pytest tests/nlp/test_entity_matcher.py tests/test_domain.py -v`.
+- [ ] Commit: `git add src/risk_engine/nlp/entity_matcher.py tests/nlp/test_entity_matcher.py tests/fixtures/entity-catalog.csv && git commit -m "feat: link portfolio entities deterministically"`.
 
-- [ ] **Step 2: Run tests and verify failure**
+### Task 8: NLP Model Ports and Model Lock
 
-Run: `pytest tests/nlp -v`
-Expected: imports fail because NLP adapters do not exist.
+**Files:** Create `src/risk_engine/nlp/interfaces.py`, `scripts/lock_models.py`, `config/models.lock.json`, `tests/nlp/test_model_interfaces.py`.
 
-- [ ] **Step 3: Implement the portfolio entity matcher and model ports**
+**Interfaces:** Produces `SentimentModel.score(text) -> SentimentResult`, `EventModel.classify(text) -> EventResult`, and a lock-file loader that rejects mutable or incomplete revisions.
 
-Use normalized aliases plus exact portfolio identifiers; do not add network entity resolution. Model ports accept injected tokenizers/models so unit tests use deterministic fake logits.
+- [ ] Write failing tests using fake logits for sentiment arithmetic, fixed hypotheses, bounded probabilities, immutable revisions, and tokenizer/config hashes.
+- [ ] Run: `pytest tests/nlp/test_model_interfaces.py -v`; expect import failure.
+- [ ] Implement dependency-injected ports and lock validation; the lock script is the only resolver.
+- [ ] Verify: `pytest tests/nlp/test_model_interfaces.py -v && ruff check scripts/lock_models.py src/risk_engine/nlp`.
+- [ ] Commit: `git add src/risk_engine/nlp/interfaces.py scripts/lock_models.py config/models.lock.json tests/nlp/test_model_interfaces.py && git commit -m "feat: pin local NLP model contracts"`.
 
-- [ ] **Step 4: Implement pinned local model adapters**
+### Task 9: Pinned Local Model Adapters
 
-Use `ProsusAI/finbert` for initial financial sentiment and `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` for the eight descriptive event hypotheses. `scripts/lock_models.py` resolves immutable repository revisions and tokenizer/config hashes into `config/models.lock.json`; runtime refuses an unpinned revision. Load one active model at a time on the RTX 3050 and support the same revision on CPU.
+**Files:** Create `src/risk_engine/nlp/local_models.py`, `tests/nlp/test_local_models.py`; modify `pyproject.toml`, `requirements.txt` for pinned PyTorch and Transformers.
 
-- [ ] **Step 5: Run unit tests and a separately marked local-model smoke test**
+**Interfaces:** Produces `ProsusAI/finbert` sentiment and `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` event adapters implementing Task 8 ports.
 
-Run: `pytest tests/nlp -v -m "not model"`
-Expected: unit tests pass with no download.
-Run after model acquisition: `pytest tests/nlp -v -m model`
-Expected: one known news sentence produces bounded sentiment and one taxonomy label on CPU.
+- [ ] Write failing offline unit tests with injected tokenizer/model fakes plus a separately marked CPU model smoke test.
+- [ ] Run: `pytest tests/nlp/test_local_models.py -v -m "not model"`; expect import failure.
+- [ ] Implement one-active-model-at-a-time loading, pinned-revision enforcement, CPU fallback using the same revision, and no runtime downloads during replay.
+- [ ] Verify: `pytest tests/nlp/test_local_models.py -v -m "not model"`.
+- [ ] After explicit model acquisition, run `pytest tests/nlp/test_local_models.py -v -m model` on CPU and record the immutable revisions exercised.
+- [ ] Commit: `git add pyproject.toml requirements.txt src/risk_engine/nlp/local_models.py tests/nlp/test_local_models.py && git commit -m "feat: run pinned financial NLP models locally"`.
 
-- [ ] **Step 6: Commit**
+### Task 10: Evidence-Backed Event Interpretation
 
-```bash
-git add src/risk_engine/nlp scripts/lock_models.py config/models.lock.json tests/nlp tests/fixtures/entity-catalog.csv
-git commit -m "feat: add pinned local NLP interpretation"
-```
+**Files:** Create `src/risk_engine/nlp/interpret.py`, `tests/nlp/test_interpret.py`.
 
-### Task 4: Stress Engine and Auditable Valuation
+**Interfaces:** Produces `interpret(item: SourceItem, matcher, sentiment_model, event_model) -> list[InterpretedEvent]`.
 
-**Files:**
-- Create: `src/risk_engine/stress/interfaces.py`
-- Create: `src/risk_engine/stress/valuation.py`
-- Create: `src/risk_engine/stress/module.py`
-- Create: `tests/stress/test_valuation.py`
-- Create: `tests/stress/test_stress_module.py`
-- Create: `tests/stress/test_properties.py`
+- [ ] Write failing tests for clause-local sentiment, extractive evidence, fixed taxonomy, deterministic ordering, and ambiguous/unknown links setting `eligible_for_automatic_stress = false`.
+- [ ] Run: `pytest tests/nlp/test_interpret.py -v`; expect import failure.
+- [ ] Implement orchestration through Tasks 7-9 without exposing raw model internals.
+- [ ] Verify phase gate: `pytest tests/nlp tests/test_domain.py -v -m "not model" && ruff check . && mypy src`.
+- [ ] Commit: `git add src/risk_engine/nlp/interpret.py tests/nlp/test_interpret.py && git commit -m "feat: interpret source items with extractive evidence"`.
 
-**Interfaces:**
-- Consumes: `Portfolio`, `MarketSnapshot`, and `StressScenario` from Task 1.
-- Produces: `ValuationAdapter.value(position, market) -> Decimal`; `StressEngine.run(portfolio, base_market, scenario) -> StressResult`.
+---
 
-- [ ] **Step 1: Write failing hand-calculated and property tests**
+## Phase 4: Transparent Stress Valuation
 
-Pin spot, duration/convexity, CS01, EAD/LGD, delta, and supported delta-gamma-vega results. Add Hypothesis properties for zero-shock P&L and monotonic declared exposures. Assert unknown shock units reject the whole scenario and unsupported nonlinear positions reduce `valuation_coverage` without receiving zero loss.
+### Task 11: Shock Normalization and Scenario Validation
 
-- [ ] **Step 2: Run tests and verify failure**
+**Files:** Create `src/risk_engine/stress/interfaces.py`, `src/risk_engine/stress/shocks.py`, `tests/stress/test_shocks.py`.
 
-Run: `pytest tests/stress -v`
-Expected: imports fail because valuation adapters do not exist.
+**Interfaces:** Produces `normalize_scenario(scenario: StressScenario) -> NormalizedScenario`.
 
-- [ ] **Step 3: Implement scenario validation and valuation adapters**
+- [ ] Write failing tests for percent, decimal, absolute, basis-point, and volatility-point conversion; reject unknown factors, mixed horizons, invalid signs, and incompatible units atomically.
+- [ ] Run: `pytest tests/stress/test_shocks.py -v`; expect import failure.
+- [ ] Implement one validated conversion boundary used by every valuation adapter.
+- [ ] Verify: `pytest tests/stress/test_shocks.py tests/test_domain.py -v`.
+- [ ] Commit: `git add src/risk_engine/stress/interfaces.py src/risk_engine/stress/shocks.py tests/stress/test_shocks.py && git commit -m "feat: normalize stress shocks with explicit units"`.
 
-Convert percent, decimal, absolute, and basis-point shocks at one validated entry point. Keep accounting default loss separate from mark-to-market P&L. Return per-position/factor attribution rows keyed by explicit units and rule version.
+### Task 12: Spot and Linear Valuation
 
-- [ ] **Step 4: Run stress tests**
+**Files:** Create `src/risk_engine/stress/valuation.py`, `tests/stress/test_linear_valuation.py`; modify `pyproject.toml`, `requirements.txt` for pinned Hypothesis test support.
 
-Run: `pytest tests/stress -v`
-Expected: fixtures and properties pass.
+**Interfaces:** Produces `SpotValuationAdapter` and `LinearDerivativeValuationAdapter` implementing `value(position, market) -> Decimal` and stressed P&L.
 
-- [ ] **Step 5: Commit**
+- [ ] Write failing hand-calculated tests for equity, commodity, FX, delta, and DV01 exposures plus zero-shock and monotonicity properties.
+- [ ] Run: `pytest tests/stress/test_linear_valuation.py -v`; expect import failure.
+- [ ] Implement deterministic signed exposure calculations from normalized shocks.
+- [ ] Verify: `pytest tests/stress/test_linear_valuation.py -v`.
+- [ ] Commit: `git add pyproject.toml requirements.txt src/risk_engine/stress/valuation.py tests/stress/test_linear_valuation.py && git commit -m "feat: value spot and linear stress exposures"`.
 
-```bash
-git add src/risk_engine/stress tests/stress
-git commit -m "feat: add transparent portfolio stress valuation"
-```
+### Task 13: Fixed-Income and Credit Valuation
 
-### Task 5: Event Study and Historical Joint Scenarios
+**Files:** Modify `src/risk_engine/stress/valuation.py`; create `tests/stress/test_credit_valuation.py`.
 
-**Files:**
-- Create: `src/risk_engine/calibration/event_study.py`
-- Create: `src/risk_engine/calibration/market_calendar.py`
-- Create: `src/risk_engine/calibration/scenarios.py`
-- Create: `scripts/build_calibration_dataset.py`
-- Create: `tests/calibration/test_event_study.py`
-- Create: `tests/calibration/test_market_calendar.py`
-- Create: `tests/calibration/test_scenarios.py`
-- Create: `tests/fixtures/market-series.csv`
-- Create: `tests/fixtures/historical-events.csv`
+**Interfaces:** Adds duration/convexity, CS01, and EAD/LGD adapters behind the Task 12 valuation interface.
 
-**Interfaces:**
-- Consumes: timestamped historical events and factor/benchmark observations.
-- Produces: `compute_event_reaction(event, factor_series, benchmark_series, spec) -> EventReaction`; `build_joint_scenario(reactions) -> JointScenario`; derived calibration tables with provenance.
+- [ ] Write failing hand-calculated tests separating risk-free yield, credit spread, and accounting default loss.
+- [ ] Run: `pytest tests/stress/test_credit_valuation.py -v`; expect missing adapters.
+- [ ] Implement the three explicit rules without a uniform haircut fallback.
+- [ ] Verify: `pytest tests/stress/test_credit_valuation.py tests/stress/test_linear_valuation.py -v`.
+- [ ] Commit: `git add src/risk_engine/stress/valuation.py tests/stress/test_credit_valuation.py && git commit -m "feat: value bond loan and default stress"`.
 
-- [ ] **Step 1: Write failing event-study and timestamp tests**
+### Task 14: Stress Engine, Nonlinear Coverage, and Attribution
 
-Use synthetic known-alpha/beta data to pin AR/CAR and the market-adjusted fallback. Test `[0]`, `[0,+1]`, `[-1,+1]`, and `[-2,+2]`. Assert an after-close Friday article maps to the next declared market session and never reads observations after its evaluation window.
+**Files:** Create `src/risk_engine/stress/module.py`, `tests/stress/test_stress_module.py`, `tests/stress/test_properties.py`.
 
-- [ ] **Step 2: Run tests and verify failure**
+**Interfaces:** Produces `StressEngine.run(portfolio, base_market, scenario) -> StressResult`.
 
-Run: `pytest tests/calibration -v`
-Expected: imports fail because calibration modules do not exist.
+- [ ] Write failing tests for delta-gamma-vega only with complete inputs, unsupported nonlinear positions reducing coverage, before/after arithmetic, required attribution dimensions, and per-factor rule versions.
+- [ ] Run: `pytest tests/stress/test_stress_module.py tests/stress/test_properties.py -v`; expect import failure.
+- [ ] Implement adapter dispatch and hierarchical attribution; unsupported positions receive no invented zero loss.
+- [ ] Verify phase gate: `pytest tests/stress tests/test_domain.py -v && ruff check . && mypy src`.
+- [ ] Commit: `git add src/risk_engine/stress/module.py tests/stress/test_stress_module.py tests/stress/test_properties.py && git commit -m "feat: run auditable portfolio stress tests"`.
 
-- [ ] **Step 3: Implement OLS event reactions and explicit market-session mapping**
+---
 
-Use statsmodels OLS for the market model and retain estimation window, gap, benchmark, missing-data rule, raw observations, and event-clock decision in every `EventReaction`.
+## Phase 5: Historical Calibration and Impact
 
-- [ ] **Step 4: Preserve complete joint factor vectors**
+### Task 15: Market-Session Mapping
 
-`build_joint_scenario` may include only contemporaneous observations from the same event/window. Reject mixed horizons or independently selected factor tails.
+**Files:** Create `src/risk_engine/calibration/market_calendar.py`, `tests/calibration/test_market_calendar.py`.
 
-- [ ] **Step 5: Implement the calibration build script**
+**Interfaces:** Produces `map_event_to_session(timestamp, calendar, close_time) -> EventClockDecision`.
 
-The script reads source manifests and committed/locally acquired market files, produces `events.csv`, `factor_shocks.csv`, and a manifest with hashes, and refuses unlicensed raw-text export.
+- [ ] Write failing tests for intraday, after-close Friday, weekend, holiday, timezone conversion, and no observation beyond the declared evaluation window.
+- [ ] Run: `pytest tests/calibration/test_market_calendar.py -v`; expect import failure.
+- [ ] Implement explicit calendar/session decisions retained in calibration evidence.
+- [ ] Verify: `pytest tests/calibration/test_market_calendar.py -v`.
+- [ ] Commit: `git add src/risk_engine/calibration/market_calendar.py tests/calibration/test_market_calendar.py && git commit -m "feat: map events to leakage-safe market sessions"`.
 
-Its coverage report is stratified by Event Class and region. It must include explicit historical support for Geopolitical, Macroeconomic/Monetary, Credit/Default, and Corporate Action, plus an RBI monetary-policy case and an Indian credit/default case; missing minimum support is recorded rather than filled with invented observations.
+### Task 16: Event-Study Reactions
 
-- [ ] **Step 6: Run calibration tests and static checks**
+**Files:** Create `src/risk_engine/calibration/event_study.py`, `tests/calibration/test_event_study.py`, `tests/fixtures/market-series.csv`; modify `pyproject.toml`, `requirements.txt` for pinned NumPy, Polars, and statsmodels.
 
-Run: `pytest tests/calibration -v && ruff check src/risk_engine/calibration scripts/build_calibration_dataset.py`
-Expected: all checks pass.
+**Interfaces:** Produces `compute_event_reaction(event, factor_series, benchmark_series, spec) -> EventReaction`.
 
-- [ ] **Step 7: Commit**
+- [ ] Write failing known-alpha/beta tests for AR/CAR, market-adjusted fallback, missing-data rules, estimation gap, and `[0]`, `[0,+1]`, `[-1,+1]`, `[-2,+2]` windows.
+- [ ] Run: `pytest tests/calibration/test_event_study.py -v`; expect import failure.
+- [ ] Implement statsmodels OLS while retaining raw observations and event-clock decisions.
+- [ ] Verify: `pytest tests/calibration/test_event_study.py tests/calibration/test_market_calendar.py -v`.
+- [ ] Commit: `git add pyproject.toml requirements.txt src/risk_engine/calibration/event_study.py tests/calibration/test_event_study.py tests/fixtures/market-series.csv && git commit -m "feat: calculate historical abnormal reactions"`.
 
-```bash
-git add src/risk_engine/calibration scripts/build_calibration_dataset.py tests/calibration tests/fixtures
-git commit -m "feat: derive historical joint stress scenarios"
-```
+### Task 17: Complete Historical Joint Scenarios
 
-### Task 6: Reference Basket and Impact Score
+**Files:** Create `src/risk_engine/calibration/scenarios.py`, `tests/calibration/test_scenarios.py`.
 
-**Files:**
-- Create: `src/risk_engine/impact/reference_basket.py`
-- Create: `src/risk_engine/impact/analogues.py`
-- Create: `src/risk_engine/impact/module.py`
-- Create: `tests/impact/test_reference_basket.py`
-- Create: `tests/impact/test_analogues.py`
-- Create: `tests/impact/test_impact_score.py`
+**Interfaces:** Produces `build_joint_scenario(reactions: Sequence[EventReaction]) -> JointScenario`.
 
-**Interfaces:**
-- Consumes: `InterpretedEvent`, historical `JointScenario` rows from Task 5, and `StressEngine` from Task 4.
-- Produces: `ReferenceBasketBuilder.build(returns, spec) -> Portfolio`; `AnalogueRepository.match(event, as_of) -> AnalogueCohort`; `ImpactEstimator.estimate(event, as_of) -> ImpactEstimate`.
+- [ ] Write failing tests for contemporaneous equity, rate, spread, FX, commodity, and volatility vectors; native units; identical event/window identity; and rejection of mixed horizons or independently selected tails.
+- [ ] Run: `pytest tests/calibration/test_scenarios.py -v`; expect import failure.
+- [ ] Implement complete-vector construction without cross-event factor splicing.
+- [ ] Verify: `pytest tests/calibration/test_scenarios.py tests/calibration/test_event_study.py -v`.
+- [ ] Commit: `git add src/risk_engine/calibration/scenarios.py tests/calibration/test_scenarios.py && git commit -m "feat: preserve historical joint shock vectors"`.
 
-- [ ] **Step 1: Write failing basket, analogue, and decile tests**
+### Task 18: Reproducible Calibration Dataset Builder
 
-Assert equal-risk candidate contributions at calibration time, frozen version metadata, training-only empirical cutpoints, ordinal bounds, event-time filtering, stable score when the Synthetic Portfolio changes, and exposure of analogue IDs/support/back-off level.
+**Files:** Create `scripts/build_calibration_dataset.py`, `tests/calibration/test_build_dataset.py`, `tests/fixtures/historical-events.csv`.
 
-- [ ] **Step 2: Add thin-history and hypothetical-provenance tests**
+**Interfaces:** Produces derived `events.csv`, `factor_shocks.csv`, coverage report, and manifest with source hashes.
 
-Assert the frozen hierarchy is applied exactly; inadequate global support returns `method = hypothetical`, never `empirical`, and includes a capped evidence status rather than an invented analogue count.
+- [ ] Write failing tests for deterministic output, license gating, stratified coverage, RBI policy evidence, Indian credit/default evidence, and missing support recorded rather than fabricated.
+- [ ] Run: `pytest tests/calibration/test_build_dataset.py -v`; expect missing script behavior.
+- [ ] Implement the builder over committed or locally acquired inputs without exporting restricted raw text.
+- [ ] Verify: `pytest tests/calibration -v && ruff check scripts/build_calibration_dataset.py`.
+- [ ] Commit: `git add scripts/build_calibration_dataset.py tests/calibration/test_build_dataset.py tests/fixtures/historical-events.csv && git commit -m "feat: build reproducible calibration evidence"`.
 
-- [ ] **Step 3: Run tests and verify failure**
+### Task 19: Versioned Reference Basket
 
-Run: `pytest tests/impact -v`
-Expected: imports fail because impact modules do not exist.
+**Files:** Create `src/risk_engine/impact/reference_basket.py`, `tests/impact/test_reference_basket.py`; modify `pyproject.toml`, `requirements.txt` for pinned SciPy.
 
-- [ ] **Step 4: Implement Reference Basket candidates and analogue retrieval**
+**Interfaces:** Produces `ReferenceBasketBuilder.build(returns, spec) -> Portfolio`.
 
-Support equal-risk contribution, equal-notional, and inverse-volatility builders behind one interface. Matching uses configuration-defined fields, distances, tie breaks, nearest-neighbour count, and no-future filtering.
+- [ ] Write failing tests for equal-risk contribution, equal-notional and inverse-volatility challengers, frozen constituents/covariance/lookback, and independence from the Synthetic Portfolio.
+- [ ] Run: `pytest tests/impact/test_reference_basket.py -v`; expect import failure.
+- [ ] Implement deterministic builders behind one interface.
+- [ ] Verify: `pytest tests/impact/test_reference_basket.py tests/stress -v`.
+- [ ] Commit: `git add pyproject.toml requirements.txt src/risk_engine/impact/reference_basket.py tests/impact/test_reference_basket.py && git commit -m "feat: build versioned reference baskets"`.
 
-- [ ] **Step 5: Implement frozen empirical severity mapping**
+### Task 20: Historical Analogue Retrieval and Back-Off
 
-Revalue the Reference Basket under every analogue Joint Shock Vector, use the configured expected-loss statistic, and map it through versioned training cutpoints to `1..10`. Return an uncertainty range, support, method, and calibration version.
+**Files:** Create `src/risk_engine/impact/analogues.py`, `tests/impact/test_analogues.py`; modify `config/default.toml`.
 
-- [ ] **Step 6: Run impact and upstream financial tests**
+**Interfaces:** Produces `AnalogueRepository.match(event, as_of) -> AnalogueCohort`.
 
-Run: `pytest tests/impact tests/stress tests/calibration -v`
-Expected: all tests pass.
+- [ ] Write failing tests for no-future filtering, configured fields/distances/tie breaks, exact back-off hierarchy, support counts, and inadequate global support returning hypothetical provenance.
+- [ ] Run: `pytest tests/impact/test_analogues.py -v`; expect import failure.
+- [ ] Implement frozen nearest-neighbour and back-off behavior.
+- [ ] Verify: `pytest tests/impact/test_analogues.py tests/test_config.py -v`.
+- [ ] Commit: `git add src/risk_engine/impact/analogues.py tests/impact/test_analogues.py config/default.toml && git commit -m "feat: retrieve leakage-safe historical analogues"`.
 
-- [ ] **Step 7: Commit**
+### Task 21: Frozen Empirical Impact Estimation
 
-```bash
-git add src/risk_engine/impact tests/impact
-git commit -m "feat: calibrate empirical market impact scores"
-```
+**Files:** Create `src/risk_engine/impact/module.py`, `tests/impact/test_impact_score.py`.
 
-### Task 7: Risk Engine Orchestration and Trigger Policy
+**Interfaces:** Produces `ImpactEstimator.estimate(event, as_of) -> ImpactEstimate`.
 
-**Files:**
-- Create: `src/risk_engine/risk/module.py`
-- Create: `src/risk_engine/risk/confidence.py`
-- Create: `src/risk_engine/risk/policy.py`
-- Create: `tests/risk/test_risk_engine.py`
-- Create: `tests/risk/test_confidence.py`
-- Create: `tests/risk/test_policy.py`
+- [ ] Write failing tests for reference-basket revaluation, training-only cutpoints, decile bounds, stable scores when holdings change, uncertainty/support metadata, and hypothetical labeling under thin history.
+- [ ] Run: `pytest tests/impact/test_impact_score.py -v`; expect import failure.
+- [ ] Implement median expected reference loss and frozen empirical decile mapping.
+- [ ] Verify phase gate: `pytest tests/impact tests/stress tests/calibration -v && ruff check . && mypy src`.
+- [ ] Commit: `git add src/risk_engine/impact/module.py tests/impact/test_impact_score.py && git commit -m "feat: calibrate portfolio-independent impact scores"`.
 
-**Interfaces:**
-- Consumes: Data replay, NLP interpretation, ImpactEstimator, portfolio, and frozen policy configuration.
-- Produces: `RiskEngine.analyze(items, as_of) -> list[RiskSignal]`; `TriggerPolicy.evaluate(signal, portfolio_materiality) -> TriggerDecision`.
+---
 
-- [ ] **Step 1: Write failing end-to-end Risk Signal tests with fakes**
+## Phase 6: Risk Orchestration and Backtesting
 
-Assert all required fields, extractive evidence, versions, deterministic ordering, separate Impact/Confidence/Materiality, and no publication of partial signals.
+### Task 22: Confidence Calibration
 
-- [ ] **Step 2: Write confidence and trigger-policy tests**
+**Files:** Create `src/risk_engine/risk/confidence.py`, `tests/risk/test_confidence.py`; modify `pyproject.toml`, `requirements.txt` for pinned scikit-learn.
 
-Pin the declared Confidence target, temperature-calibrated output, Impact threshold `>=8`, injected validated Confidence threshold, injected economic materiality floor/tolerance, and manual override. Unknown/ambiguous entities must never auto-trigger.
+**Interfaces:** Produces `ConfidenceCalibrator.fit/transform` for the joint probability that entity link and Event Class are correct.
 
-- [ ] **Step 3: Run tests and verify failure**
+- [ ] Write failing tests for declared target, temperature fitting on development data only, bounded output, deterministic serialization, Brier score, and reliability bins.
+- [ ] Run: `pytest tests/risk/test_confidence.py -v`; expect import failure.
+- [ ] Implement calibration independently from impact severity and analogue support.
+- [ ] Verify: `pytest tests/risk/test_confidence.py -v`.
+- [ ] Commit: `git add pyproject.toml requirements.txt src/risk_engine/risk/confidence.py tests/risk/test_confidence.py && git commit -m "feat: calibrate interpretation confidence"`.
 
-Run: `pytest tests/risk -v`
-Expected: imports fail because the Risk Engine does not exist.
+### Task 23: Transparent Trigger Policy
 
-- [ ] **Step 4: Implement orchestration, calibration, and trigger decisions**
+**Files:** Create `src/risk_engine/risk/policy.py`, `tests/risk/test_policy.py`; modify `config/default.toml`.
 
-Keep Confidence as the calibrated probability that entity and Event Class are jointly correct. Store analogue support separately. `TriggerDecision` records each gate and reason rather than returning only a boolean.
+**Interfaces:** Produces `TriggerPolicy.evaluate(signal, portfolio_materiality) -> TriggerDecision`.
 
-- [ ] **Step 5: Run Risk Engine and all core-module tests**
+- [ ] Write failing tests for `impact_score >= 8`, injected validated Confidence threshold, economic materiality floor/tolerance, every gate/reason, manual override, and ambiguous/unknown entities never auto-triggering.
+- [ ] Run: `pytest tests/risk/test_policy.py -v`; expect import failure.
+- [ ] Implement a recorded multi-gate decision rather than a bare boolean.
+- [ ] Verify: `pytest tests/risk/test_policy.py tests/test_config.py -v`.
+- [ ] Commit: `git add src/risk_engine/risk/policy.py tests/risk/test_policy.py config/default.toml && git commit -m "feat: evaluate transparent stress triggers"`.
 
-Run: `pytest tests/risk tests/data tests/nlp tests/impact tests/stress -v`
-Expected: all tests pass without network access.
+### Task 24: Risk Engine Orchestration
 
-- [ ] **Step 6: Commit**
+**Files:** Create `src/risk_engine/risk/module.py`, `tests/risk/test_risk_engine.py`.
 
-```bash
-git add src/risk_engine/risk tests/risk
-git commit -m "feat: assemble evidence-backed risk signals"
-```
+**Interfaces:** Produces `RiskEngine.analyze(items, as_of) -> list[RiskSignal]`.
 
-### Task 8: Chronological Backtest and Configuration Selection
+- [ ] Write failing end-to-end tests with fakes for required fields, extractive evidence, versions, deterministic order, separate impact/confidence/materiality, disclosed Action Priority, ambiguity abstention, and no partial-signal publication.
+- [ ] Run: `pytest tests/risk/test_risk_engine.py -v`; expect import failure.
+- [ ] Implement orchestration over Data, NLP, Impact, Confidence, and policy interfaces only; derive Action Priority from separately stored Impact, Confidence, and Portfolio Materiality inputs.
+- [ ] Verify: `pytest tests/risk tests/data tests/nlp tests/impact -v -m "not model"`.
+- [ ] Commit: `git add src/risk_engine/risk/module.py tests/risk/test_risk_engine.py && git commit -m "feat: assemble evidence-backed risk signals"`.
 
-**Files:**
-- Create: `src/risk_engine/backtest/splits.py`
-- Create: `src/risk_engine/backtest/metrics.py`
-- Create: `src/risk_engine/backtest/module.py`
-- Create: `scripts/run_backtest.py`
-- Create: `data/calibration/selected-config.json`
-- Create: `data/calibration/impact-cutpoints.json`
-- Create: `data/results/development-backtest.json`
-- Create: `tests/backtest/test_splits.py`
-- Create: `tests/backtest/test_metrics.py`
-- Create: `tests/backtest/test_backtest_module.py`
+### Task 25: Leakage-Safe Chronological Splits
 
-**Interfaces:**
-- Consumes: historical snapshot IDs, grouped event IDs, candidate configuration grid, RiskEngine, StressEngine.
-- Produces: `nested_chronological_splits(...) -> list[OuterFold]`; `BacktestModule.evaluate(...) -> BacktestReport`; locked configuration and results JSON.
+**Files:** Create `src/risk_engine/backtest/splits.py`, `tests/backtest/test_splits.py`.
 
-- [ ] **Step 1: Write failing temporal-leakage and split tests**
+**Interfaces:** Produces `nested_chronological_splits(...) -> list[OuterFold]`.
 
-Assert expanding outer folds, inner rolling folds, group isolation, embargo at least the longest event window, and one untouched final period. Duplicate stories from one event may not straddle train and test.
+- [ ] Write failing tests for expanding outer folds, inner rolling folds, grouped-event isolation, longest-window embargo, untouched final period, and duplicate stories never straddling train/test.
+- [ ] Run: `pytest tests/backtest/test_splits.py -v`; expect import failure.
+- [ ] Implement deterministic grouped chronological splits.
+- [ ] Verify: `pytest tests/backtest/test_splits.py -v`.
+- [ ] Commit: `git add src/risk_engine/backtest/splits.py tests/backtest/test_splits.py && git commit -m "feat: create leakage-safe chronological folds"`.
 
-- [ ] **Step 2: Write failing metric and selection tests**
+### Task 26: Backtest Metrics and Configuration Selection
 
-Pin macro-F1, Brier/log loss, severity rank correlation, ordinal MAE, bucket monotonicity, interval coverage, stressed-P&L error, alert precision/recall, alerts/day, and the simplest-within-one-standard-error selector.
+**Files:** Create `src/risk_engine/backtest/metrics.py`, `tests/backtest/test_metrics.py`.
 
-- [ ] **Step 3: Run tests and verify failure**
+**Interfaces:** Produces classification, calibration, severity, interval, scenario, valuation, and alert metrics plus `select_within_one_standard_error(candidates)`.
 
-Run: `pytest tests/backtest -v`
-Expected: imports fail because backtest modules do not exist.
+- [ ] Write failing literal-fixture tests for macro-F1, Brier/log loss, rank correlation, ordinal MAE, monotonicity, coverage, P&L error, alert precision/recall, alerts/day, and simplest-within-one-SE selection.
+- [ ] Run: `pytest tests/backtest/test_metrics.py -v`; expect import failure.
+- [ ] Implement pure metric functions and deterministic tie breaks.
+- [ ] Verify: `pytest tests/backtest/test_metrics.py -v`.
+- [ ] Commit: `git add src/risk_engine/backtest/metrics.py tests/backtest/test_metrics.py && git commit -m "feat: measure and select risk configurations"`.
 
-- [ ] **Step 4: Implement nested chronological evaluation**
+### Task 27: Locked Backtest Orchestration
 
-Evaluate only the predeclared window, basket, matching/back-off, cutpoint, Confidence threshold, and materiality-floor candidates. Persist all candidate results and sensitivity curves, not only the winner.
+**Files:** Create `src/risk_engine/backtest/module.py`, `scripts/run_backtest.py`, `tests/backtest/test_backtest_module.py`, `data/calibration/selected-config.json`, `data/calibration/impact-cutpoints.json`, `data/results/development-backtest.json`.
 
-- [ ] **Step 5: Implement lock-once evaluation output**
+**Interfaces:** Produces `BacktestModule.evaluate(...) -> BacktestReport`; `--select` writes development locks, and `--final` writes once with dataset/model/config hashes.
 
-`scripts/run_backtest.py --select` writes `selected-config.json`, training-only `impact-cutpoints.json`, and the development report. `--final` refuses to overwrite an existing final report and records dataset/model/config hashes.
+- [ ] Write failing tests for production-interface reuse, historical `as_of`, all candidate results retained, sensitivity curves, immutable final output, and second-write refusal.
+- [ ] Run: `pytest tests/backtest/test_backtest_module.py -v`; expect import failure.
+- [ ] Implement nested evaluation and lock-once CLI behavior.
+- [ ] Verify phase gate: `pytest tests/backtest tests/calibration tests/impact tests/risk -v && ruff check . && mypy src`.
+- [ ] Commit: `git add src/risk_engine/backtest/module.py scripts/run_backtest.py tests/backtest/test_backtest_module.py data/calibration/selected-config.json data/calibration/impact-cutpoints.json data/results/development-backtest.json && git commit -m "feat: run locked chronological backtests"`.
 
-- [ ] **Step 6: Run the full analytical test suite**
+---
 
-Run: `pytest tests/backtest tests/calibration tests/impact tests/risk -v`
-Expected: all tests pass.
+## Phase 7: API and Analyst Dashboard
 
-- [ ] **Step 7: Commit**
+### Task 28: Risk Signal API
 
-```bash
-git add src/risk_engine/backtest scripts/run_backtest.py tests/backtest data/calibration/selected-config.json data/calibration/impact-cutpoints.json data/results/development-backtest.json
-git commit -m "feat: add leakage-safe historical validation"
-```
+**Files:** Create `src/risk_engine/api/dependencies.py`, `src/risk_engine/api/app.py`, `tests/api/test_signals.py`; modify `pyproject.toml`, `requirements.txt` for pinned FastAPI and Uvicorn.
 
-### Task 9: FastAPI Risk Signal Interface
+**Interfaces:** Produces `create_app(container: AppContainer) -> FastAPI`, `POST /v1/signals/analyze`, `GET /v1/signals`, and `GET /health`.
 
-**Files:**
-- Create: `src/risk_engine/api/app.py`
-- Create: `src/risk_engine/api/dependencies.py`
-- Create: `tests/api/test_app.py`
+- [ ] Write failing OpenAPI/endpoint tests for exact Risk Signal JSON, a stable schema snapshot, explicit snapshot IDs, no implicit refresh, validation errors, and correlation IDs without local paths or secrets.
+- [ ] Run: `pytest tests/api/test_signals.py -v`; expect import failure.
+- [ ] Implement dependency-injected routes calling module interfaces only.
+- [ ] Verify: `pytest tests/api/test_signals.py tests/risk -v`.
+- [ ] Commit: `git add pyproject.toml requirements.txt src/risk_engine/api/dependencies.py src/risk_engine/api/app.py tests/api/test_signals.py && git commit -m "feat: expose versioned risk signal endpoints"`.
 
-**Interfaces:**
-- Consumes: DataModule, RiskEngine, StressEngine, BacktestReport store.
-- Produces: `create_app(container: AppContainer) -> FastAPI`; `POST /v1/signals/analyze`; `GET /v1/signals`; `POST /v1/stress-tests`; `GET /v1/backtests/latest`; `GET /health`.
+### Task 29: Stress and Backtest API
 
-- [ ] **Step 1: Write failing OpenAPI and endpoint tests**
+**Files:** Modify `src/risk_engine/api/app.py`; create `tests/api/test_stress_and_backtests.py`.
 
-Assert exact Risk Signal JSON, explicit snapshot IDs, no implicit network refresh, validation errors for bad shocks/versions, traceable TriggerDecision, and stable OpenAPI schema.
+**Interfaces:** Adds `POST /v1/stress-tests` and `GET /v1/backtests/latest`.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [ ] Write failing tests for bad shocks/versions, traceable TriggerDecision, manual override audit, missing artifacts, and serialized attribution/coverage.
+- [ ] Run: `pytest tests/api/test_stress_and_backtests.py -v`; expect missing routes.
+- [ ] Implement HTTP 422 for domain validation and 404/409 for missing or conflicting versions.
+- [ ] Verify: `pytest tests/api -v`.
+- [ ] Commit: `git add src/risk_engine/api/app.py tests/api/test_stress_and_backtests.py && git commit -m "feat: expose stress and backtest evidence"`.
 
-Run: `pytest tests/api -v`
-Expected: import failure because the API app does not exist.
+### Task 30: Pure Dashboard View Models
 
-- [ ] **Step 3: Implement dependency-injected FastAPI routes**
+**Files:** Create `src/risk_engine/dashboard/view_models.py`, `tests/dashboard/test_view_models.py`.
 
-Routes call module interfaces only. Map domain validation to HTTP 422, missing snapshots/versions to 404 or 409, and internal failures to a correlation ID without leaking local paths or secrets.
+**Interfaces:** Produces pure `build_signal_monitor`, `build_portfolio_stress`, and `build_backtest_evidence` view models.
 
-- [ ] **Step 4: Run API and core contract tests**
+- [ ] Write failing tests for distinct severity/confidence encodings, snapshot badge, provenance, before/after loss, complete attribution, unsupported coverage, analogue distribution, India cases, and empirical/hypothetical labels.
+- [ ] Run: `pytest tests/dashboard/test_view_models.py -v`; expect import failure.
+- [ ] Implement formatting only; view models never recalculate financial results.
+- [ ] Verify: `pytest tests/dashboard/test_view_models.py -v`.
+- [ ] Commit: `git add src/risk_engine/dashboard/view_models.py tests/dashboard/test_view_models.py && git commit -m "feat: shape analyst dashboard evidence"`.
 
-Run: `pytest tests/api tests/test_domain.py tests/risk -v`
-Expected: all tests pass.
+### Task 31: Streamlit Analyst Pages
 
-- [ ] **Step 5: Commit**
+**Files:** Create `src/risk_engine/dashboard/app.py`, `src/risk_engine/dashboard/pages/signal_monitor.py`, `src/risk_engine/dashboard/pages/portfolio_stress.py`, `src/risk_engine/dashboard/pages/backtest_evidence.py`, `tests/dashboard/test_app_smoke.py`; modify `pyproject.toml`, `requirements.txt` for pinned Streamlit and Plotly.
 
-```bash
-git add src/risk_engine/api tests/api
-git commit -m "feat: expose versioned risk signal API"
-```
+**Interfaces:** Produces three read-focused pages; manual override submits a new `StressScenario` audit record.
 
-### Task 10: Analyst Dashboard
+- [ ] Write failing smoke tests for fixture rendering, page registration, empty/error states, and override submission without historical mutation.
+- [ ] Run: `pytest tests/dashboard/test_app_smoke.py -v`; expect import failure.
+- [ ] Implement pages over Task 30 view models.
+- [ ] Verify phase gate: `pytest tests/api tests/dashboard -v && ruff check . && mypy src`; smoke-launch Streamlit headlessly.
+- [ ] Commit: `git add pyproject.toml requirements.txt src/risk_engine/dashboard/app.py src/risk_engine/dashboard/pages/signal_monitor.py src/risk_engine/dashboard/pages/portfolio_stress.py src/risk_engine/dashboard/pages/backtest_evidence.py tests/dashboard/test_app_smoke.py && git commit -m "feat: add analyst risk dashboard pages"`.
 
-**Files:**
-- Create: `src/risk_engine/dashboard/app.py`
-- Create: `src/risk_engine/dashboard/view_models.py`
-- Create: `src/risk_engine/dashboard/pages/signal_monitor.py`
-- Create: `src/risk_engine/dashboard/pages/portfolio_stress.py`
-- Create: `src/risk_engine/dashboard/pages/backtest_evidence.py`
-- Create: `tests/dashboard/test_view_models.py`
-- Create: `tests/dashboard/test_app_smoke.py`
+---
 
-**Interfaces:**
-- Consumes: stored Risk Signals, Stress Results, Backtest Reports, and immutable snapshot metadata.
-- Produces: three read-focused Streamlit views; pure `build_*_view_model(...)` functions for testable formatting and hierarchy.
+## Phase 8: Offline Demonstration
 
-- [ ] **Step 1: Write failing view-model tests**
+### Task 32: Auditable Synthetic Portfolio
 
-Assert distinct severity and Confidence encodings, visible live/snapshot badge, evidence/provenance, before/after currency and percentage loss, hierarchical attribution, unsupported coverage, analogue distribution, India cases, and hypothetical-vs-empirical labels.
+**Files:** Create `scripts/generate_synthetic_portfolio.py`, `data/portfolio/synthetic_portfolio.csv`, `tests/integration/test_synthetic_portfolio.py`.
 
-- [ ] **Step 2: Run tests and verify failure**
+**Interfaces:** Produces a fixed-seed portfolio of approximately 60 loans, bonds, and derivatives across approved regions, sectors, ratings, maturities, and factors.
 
-Run: `pytest tests/dashboard -v`
-Expected: imports fail because dashboard modules do not exist.
+- [ ] Write failing tests for deterministic generation, unique IDs, required asset/region coverage, India exposure, factor units, and load through `Portfolio`.
+- [ ] Run: `pytest tests/integration/test_synthetic_portfolio.py -v`; expect missing generator/artifact.
+- [ ] Implement the generator and commit its reproducible CSV output.
+- [ ] Verify: `pytest tests/integration/test_synthetic_portfolio.py -v`.
+- [ ] Commit: `git add scripts/generate_synthetic_portfolio.py data/portfolio/synthetic_portfolio.csv tests/integration/test_synthetic_portfolio.py && git commit -m "feat: generate an auditable synthetic portfolio"`.
 
-- [ ] **Step 3: Implement pure view models and the three Streamlit pages**
+### Task 33: Restricted Evaluation-Data Acquisition Gate
 
-The dashboard reads stored values and never recalculates financial results. Manual scenario overrides submit a new StressScenario with an audit record; they do not mutate historical results.
+**Files:** Create `scripts/acquire_evaluation_data.py`, `tests/integration/test_acquire_evaluation_data.py`.
 
-- [ ] **Step 4: Run dashboard tests and a local smoke launch**
+**Interfaces:** Produces an explicit terms-acknowledged, hash-verified acquisition path that writes FiQA/StockNet inputs only under ignored `data/local/`.
 
-Run: `pytest tests/dashboard -v`
-Expected: all tests pass.
-Run: `streamlit run src/risk_engine/dashboard/app.py --server.headless true`
-Expected: process starts without import or schema errors against fixture data.
+- [ ] Write failing tests for required terms acknowledgement, expected hashes, refusal on mismatch, restricted destination, and no raw rows entering tracked paths.
+- [ ] Run: `pytest tests/integration/test_acquire_evaluation_data.py -v`; expect missing script behavior.
+- [ ] Implement acquisition without making restricted data a prerequisite for the committed demo.
+- [ ] Verify: `pytest tests/integration/test_acquire_evaluation_data.py -v && git status --short` with no restricted rows staged.
+- [ ] Commit: `git add scripts/acquire_evaluation_data.py tests/integration/test_acquire_evaluation_data.py && git commit -m "feat: gate restricted evaluation data acquisition"`.
 
-- [ ] **Step 5: Commit**
+### Task 34: Licensed Demo Snapshot
 
-```bash
-git add src/risk_engine/dashboard tests/dashboard
-git commit -m "feat: add portfolio risk analyst dashboard"
-```
+**Files:** Create `scripts/prepare_demo_snapshot.py`, `data/demo/news.json`, `data/demo/social.json`, `data/calibration/events.csv`, `data/calibration/factor_shocks.csv`, `data/manifests/demo-snapshot.json`, `tests/integration/test_demo_snapshot.py`.
 
-### Task 11: Committed Demo Data and Offline Golden Replay
+**Interfaces:** Produces a complete frozen snapshot containing only redistributable or project-authored text and derived calibration rows.
 
-**Files:**
-- Create: `scripts/generate_synthetic_portfolio.py`
-- Create: `scripts/acquire_evaluation_data.py`
-- Create: `scripts/prepare_demo_snapshot.py`
-- Create: `scripts/run_demo.py`
-- Create: `data/demo/news.json`
-- Create: `data/demo/social.json`
-- Create: `data/portfolio/synthetic_portfolio.csv`
-- Create: `data/calibration/events.csv`
-- Create: `data/calibration/factor_shocks.csv`
-- Create: `data/manifests/demo-snapshot.json`
-- Create: `tests/integration/test_offline_demo.py`
-- Create: `tests/golden/demo-output.json`
+- [ ] Write failing tests for deterministic manifest hashes, project-authored social text, permitted news text, RBI and Indian credit/default cases, required versions, and incomplete-snapshot refusal.
+- [ ] Run: `pytest tests/integration/test_demo_snapshot.py -v`; expect missing artifacts.
+- [ ] Implement deterministic preparation without exporting restricted third-party text.
+- [ ] Verify: `pytest tests/integration/test_demo_snapshot.py -v && git status --short` with only named artifacts changed.
+- [ ] Commit: `git add scripts/prepare_demo_snapshot.py data/demo/news.json data/demo/social.json data/calibration/events.csv data/calibration/factor_shocks.csv data/manifests/demo-snapshot.json tests/integration/test_demo_snapshot.py && git commit -m "feat: freeze licensed offline demo inputs"`.
 
-**Interfaces:**
-- Consumes: all four modules, pinned models/configuration, redistributable source material.
-- Produces: `python scripts/run_demo.py`; byte-stable golden Risk Signals and Stress Results.
+### Task 35: One-Command Offline Golden Replay
 
-- [ ] **Step 1: Write the failing offline integration test**
+**Files:** Create `scripts/run_demo.py`, `tests/integration/test_offline_demo.py`, `tests/golden/demo-output.json`.
 
-Disable network calls, load both source types, generate at least one high-impact eligible signal, run and override one Stress Test, verify before/after values and attribution, and compare structured output with the golden file.
+**Interfaces:** Produces `python scripts/run_demo.py` and byte-stable Risk Signal/Stress Result output.
 
-- [ ] **Step 2: Run the integration test and verify failure**
+- [ ] Write the failing integration test with networking disabled: load both source types, produce a high-impact eligible signal, run and override a Stress Test, verify before/after values and attribution, and compare golden output.
+- [ ] Run: `pytest tests/integration/test_offline_demo.py -v`; expect missing launcher/golden output.
+- [ ] Implement artifact/model/version verification, offline replay, and deterministic structured serialization before launching FastAPI/Streamlit.
+- [ ] Verify phase gate: `pytest tests/integration/test_offline_demo.py -v && pytest -q && ruff check . && mypy src` with outbound networking disabled.
+- [ ] Commit: `git add scripts/run_demo.py tests/integration/test_offline_demo.py tests/golden/demo-output.json && git commit -m "feat: ship deterministic offline replay"`.
 
-Run: `pytest tests/integration/test_offline_demo.py -v`
-Expected: FAIL because committed demo artifacts and launcher do not exist.
+---
 
-- [ ] **Step 3: Generate and commit the auditable synthetic portfolio**
+## Phase 9: Evaluation and Submission
 
-Use a fixed seed and approximately 60 loans, bonds, and derivatives across the approved regions, sectors, ratings, and risk factors. Commit both the generator and its CSV result.
+### Task 36: Final Locked Evaluation and Results
 
-- [ ] **Step 4: Prepare licensed demo inputs and manifests**
+**Files:** Create `data/results/final-backtest.json`, `docs/results.md`; modify `scripts/run_backtest.py` only if the locked command fails its existing contract.
 
-Store permitted text or paraphrased/synthetic demo material with explicit provenance; include source/dataset terms, transformations, hashes, dates, and assumptions. The calibration tables contain derived event/factor rows rather than unlicensed article bodies.
+**Interfaces:** Produces the immutable final BacktestReport and an honest narrative of measured results, negative findings, limitations, and supported coverage.
 
-The committed social demo rows are project-authored and clearly marked synthetic/paraphrased. `scripts/acquire_evaluation_data.py` fetches FiQA/StockNet evaluation inputs only after explicit terms acknowledgement, verifies expected hashes, and writes them to an ignored local-data directory; raw rows remain uncommitted and are used only under their source terms. The frozen demo and calibration manifests include the RBI policy and Indian credit/default cases required by the approved design.
+- [ ] Run `python scripts/run_backtest.py --final`; verify it writes once and refuses a second overwrite.
+- [ ] Validate recorded dataset/model/config hashes against the committed manifests and locks.
+- [ ] Write `docs/results.md` from actual output without invented targets.
+- [ ] Verify: `pytest tests/backtest tests/integration -v && git diff --check`.
+- [ ] Commit: `git add data/results/final-backtest.json docs/results.md scripts/run_backtest.py && git commit -m "docs: report locked evaluation results"`.
 
-- [ ] **Step 5: Implement the one-command demo launcher and freeze the golden output**
+### Task 37: Evaluator README, Methodology, and Attribution
 
-The launcher verifies every required artifact and model revision before starting FastAPI and Streamlit. It refuses an incomplete snapshot and never refreshes implicitly.
+**Files:** Modify `README.md`, `LICENSE`, `.gitignore`; create `THIRD_PARTY_NOTICES.md`, `docs/methodology.md`.
 
-- [ ] **Step 6: Run offline and full quality suites**
+**Interfaces:** Produces the evaluator-facing setup, dataset/license assumptions, domain impact, limitations, AI disclosure, and canonical methodology.
 
-Run: `pytest tests/integration/test_offline_demo.py -v`
-Expected: PASS with outbound network disabled.
-Run: `pytest -q && ruff check . && mypy src`
-Expected: all checks pass.
+- [ ] Write the required README headings, exact Python 3.11 quickstart, `python scripts/run_demo.py`, candidate details, measured results, and artifact links.
+- [ ] Add MIT licensing and third-party notices distinguishing code reuse from inspiration and restricted dataset terms.
+- [ ] Verify links, commands, ignored secrets/models/databases/restricted data, and consistency with `docs/results.md`.
+- [ ] Run: `pytest -q && ruff check . && mypy src && git diff --check`.
+- [ ] Commit: `git add README.md LICENSE .gitignore THIRD_PARTY_NOTICES.md docs/methodology.md && git commit -m "docs: explain reproducible risk methodology"`.
 
-- [ ] **Step 7: Commit**
+### Task 38: Reproducible Architecture Diagram
 
-```bash
-git add scripts data tests/integration tests/golden
-git commit -m "feat: ship deterministic offline demonstration"
-```
+**Files:** Create `docs/architecture.mmd`, `docs/architecture.png`; modify `README.md` only to embed the diagram.
 
-### Task 12: Evaluation Results and Submission Package
+**Interfaces:** Produces a high-resolution diagram whose source matches the implemented Data, Risk, Stress, Backtest, API, and dashboard boundaries.
 
-**Files:**
-- Create: `README.md`
-- Create: `LICENSE`
-- Create: `THIRD_PARTY_NOTICES.md`
-- Create: `docs/methodology.md`
-- Create: `docs/results.md`
-- Create: `docs/architecture.png`
-- Create: `docs/demo-script.md`
-- Create: `docs/presentation.pptx`
-- Create: `docs/presentation.pdf`
-- Create: `data/results/final-backtest.json`
-- Modify: `.gitignore`
+- [ ] Write the diagram source from actual module dependencies and offline/online boundaries.
+- [ ] Render `docs/architecture.png` and visually verify labels, arrows, legibility, and consistency with the approved design.
+- [ ] Verify the README embed resolves and the diagram contains no unimplemented service or data flow.
+- [ ] Commit: `git add README.md docs/architecture.mmd docs/architecture.png && git commit -m "docs: diagram the implemented risk architecture"`.
 
-**Interfaces:**
-- Consumes: locked final BacktestReport, dashboard screenshots, architecture/spec, source/data manifests.
-- Produces: complete evaluator-facing public repository and manual video-upload checklist.
+### Task 39: Submission Presentation
 
-- [ ] **Step 1: Run the final locked evaluation once**
+**Files:** Create `docs/presentation.pptx`, `docs/presentation.pdf`.
 
-Run: `python scripts/run_backtest.py --final`
-Expected: writes a versioned immutable final report and refuses any second overwrite. Record actual metrics, negative results, limitations, and supported coverage without inventing targets.
+**Interfaces:** Produces a five-to-seven-slide deck covering title, problem/approach, architecture, implementation, measured results, domain impact, limitations, and next steps.
 
-- [ ] **Step 2: Write the evaluator-facing README and methodology**
+- [ ] Build the deck only from implemented behavior and locked results.
+- [ ] Export to PDF and visually verify every slide at presentation dimensions for overflow, contrast, alignment, and readable charts.
+- [ ] Verify all figures, claims, and metrics resolve to repository evidence.
+- [ ] Commit: `git add docs/presentation.pptx docs/presentation.pdf && git commit -m "docs: present measured risk engine results"`.
 
-Follow the supplied README headings exactly. Include candidate details supplied by the user, problem/approach, embedded architecture, tech stack, dataset sources/assumptions/licenses, Python 3.11 quickstart, `python scripts/run_demo.py`, key results/domain impact, demo link field, AI-assistance disclosure, limitations, and links to deeper research.
+### Task 40: Demo Script and Publication Checklist
 
-- [ ] **Step 3: Add license, third-party notices, architecture image, and results**
+**Files:** Create `docs/demo-script.md`; modify `README.md` only for final deck/video links.
 
-Use the MIT project license. Attribute every reused dependency/idea and distinguish code reuse from inspiration. `docs/methodology.md` is the concise canonical explanation; the longer research notes remain optional evidence.
+**Interfaces:** Produces a five-minute jury path, ten-minute recording path, cold-start rehearsal, offline-recovery steps, and manual publication checklist.
 
-- [ ] **Step 4: Build and verify the five-to-seven-slide deck**
+- [ ] Write and rehearse source-to-signal, stress result, backtest evidence, manual override, and disabled-network recovery paths.
+- [ ] Record the manual gate: the user supplies the final unlisted video URL and approves public naming; no automated publication.
+- [ ] Verify final links in an incognito browser after the user supplies them.
+- [ ] Run final gate: `pytest -q && ruff check . && mypy src && git status --short`; inspect staged files for secrets, weights, caches, databases, or restricted text.
+- [ ] Commit: `git add README.md docs/demo-script.md && git commit -m "docs: script and verify the final demonstration"`.
 
-Create title, problem/approach, architecture, implementation, measured results, domain impact, and limitations/next-steps slides. Export to `docs/presentation.pdf` and visually verify every slide at presentation dimensions.
+---
 
-- [ ] **Step 5: Prepare and rehearse both demo lengths**
+## Final Handoff
 
-`docs/demo-script.md` contains a five-minute jury path and a ten-minute recording path. Verify a cold local start, offline replay, source-to-signal flow, stress result, backtest evidence, and recovery from a disabled network.
-
-- [ ] **Step 6: Complete the manual publication gate**
-
-The user records and uploads the walkthrough to YouTube as Unlisted, supplies candidate/college details, and approves public repository naming. Insert the final video URL, then verify repository, video, and PDF links in an incognito window; do not publish or transmit on the user's behalf without explicit authorization.
-
-- [ ] **Step 7: Run final repository checks**
-
-Run: `pytest -q && ruff check . && mypy src && git status --short`
-Expected: tests/static checks pass and no secret, model weight, cache, local database, or unintended raw dataset is staged.
-
-- [ ] **Step 8: Commit**
-
-```bash
-git add README.md LICENSE THIRD_PARTY_NOTICES.md docs data/results/final-backtest.json .gitignore
-git commit -m "docs: package hackathon submission"
-```
+- Run a whole-branch review against the merge base with the plan's Review Focus supplied verbatim.
+- Fix Critical and Important findings through red-green cycles; record Minor findings explicitly.
+- Use `superpowers:finishing-a-development-branch` only after the full verification gate passes.
