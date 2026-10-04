@@ -48,6 +48,16 @@ def reaction(
             measurement_dimension=dimension,
         ),
     )
+    benchmark_observations = (
+        observations[0].model_copy(
+            update={
+                "series_id": f"benchmark-{series_id}",
+                "provider": "benchmark-source",
+                "snapshot_id": "benchmark-snapshot-2",
+                "series_version": "benchmark-v2",
+            }
+        ),
+    )
     return EventReaction(
         event_id="event-1",
         spec_version="spec-1",
@@ -68,7 +78,7 @@ def reaction(
         estimation_factor_observations=(),
         estimation_benchmark_observations=(),
         event_factor_observations=observations,
-        event_benchmark_observations=(),
+        event_benchmark_observations=benchmark_observations,
     )
 
 
@@ -117,6 +127,32 @@ def test_every_registered_window_retains_a_complete_native_joint_vector():
             ("volatility", 3.0, ShockUnit.VOLATILITY_POINT, MeasurementDimension.VOLATILITY),
         ],
     ]
+
+
+def test_every_shock_retains_factor_and_benchmark_source_observations():
+    reactions = six_reactions()
+
+    result = build_joint_scenario(reactions)
+
+    for window in result.windows:
+        for shock, source in zip(window.shocks, reactions, strict=True):
+            assert shock.source_observations == source.event_factor_observations
+            assert shock.source_benchmark_observations == source.event_benchmark_observations
+            assert shock.source_observations[0].snapshot_id == "snapshot-1"
+            assert shock.source_benchmark_observations[0].series_id == (
+                f"benchmark-{shock.factor_id}"
+            )
+            assert shock.source_benchmark_observations[0].provider == "benchmark-source"
+            assert shock.source_benchmark_observations[0].snapshot_id == "benchmark-snapshot-2"
+            assert shock.source_benchmark_observations[0].series_version == "benchmark-v2"
+
+
+def test_missing_benchmark_observations_cannot_produce_an_auditable_shock():
+    source = six_reactions()[0]
+    missing = source.model_copy(update={"event_benchmark_observations": ()})
+
+    with pytest.raises(ValueError, match="source_benchmark_observations"):
+        build_joint_scenario((missing,))
 
 
 @pytest.mark.parametrize(

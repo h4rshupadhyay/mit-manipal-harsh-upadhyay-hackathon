@@ -25,6 +25,7 @@ class HistoricalFactorShock(DomainModel):
     unit: ShockUnit
     measurement_dimension: MeasurementDimension
     source_observations: tuple[ReturnObservation, ...] = Field(min_length=1)
+    source_benchmark_observations: tuple[ReturnObservation, ...] = Field(min_length=1)
 
 
 class JointWindowScenario(DomainModel):
@@ -130,6 +131,7 @@ def build_joint_scenario(reactions: Sequence[EventReaction]) -> JointScenario:
                         unit=by_window[window].unit,
                         measurement_dimension=by_window[window].measurement_dimension,
                         source_observations=reaction.event_factor_observations,
+                        source_benchmark_observations=reaction.event_benchmark_observations,
                     )
                     for factor_id, reaction, by_window in per_factor
                 ),
