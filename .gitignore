@@ -1,9 +1,30 @@
 .superpowers/
+.impeccable/
 .venv/
 __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .env
+.env.*
+!.env.example
 *.pyc
 
+# Local or restricted datasets and databases
+data/raw/
+data/local/
+*.duckdb
+*.sqlite
+*.sqlite3
+
+# Downloaded model weights and generated artifacts
+models/
+*.pt
+*.pth
+*.safetensors
+*.onnx
+
+# Build and packaging output
+build/
+dist/
+*.egg-info/
