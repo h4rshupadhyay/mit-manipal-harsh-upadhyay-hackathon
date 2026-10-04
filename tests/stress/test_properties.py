@@ -1,6 +1,14 @@
 """Stress Test accounting and reproducibility properties."""
 
-from decimal import Decimal
+from decimal import (
+    ROUND_CEILING,
+    ROUND_FLOOR,
+    ROUND_HALF_EVEN,
+    Decimal,
+    Inexact,
+    getcontext,
+    localcontext,
+)
 
 from hypothesis import given
 from hypothesis import strategies as st
@@ -57,3 +65,41 @@ def test_zero_shock_and_immutable_inputs(notional: int, weight: int) -> None:
     assert result.absolute_loss == 0
     assert result.valuation_coverage == 1
     assert before == (holdings.model_dump(), snapshot.model_dump(), shock.model_dump())
+
+
+def test_replay_is_independent_of_caller_decimal_precision_and_rounding() -> None:
+    holdings = portfolio(
+        position({"delta:EQUITY-US": 0.12345678901234567}, derivative=True, notional="0")
+    )
+    snapshot = market("EQUITY-US")
+    shock = scenario("EQUITY-US", 0.12345678901234567)
+    results = []
+    for precision, rounding in ((6, ROUND_FLOOR), (28, ROUND_HALF_EVEN), (60, ROUND_CEILING)):
+        with localcontext() as caller:
+            caller.prec = precision
+            caller.rounding = rounding
+            result = StressEngine().run(holdings, snapshot, shock)
+            assert getcontext().prec == precision
+            assert getcontext().rounding == rounding
+            results.append(result)
+    assert len({r.stress_result_id for r in results}) == 1
+    assert len({r.model_dump_json() for r in results}) == 1
+
+
+def test_stress_result_validation_and_flags_use_only_the_local_context() -> None:
+    holdings = portfolio(position({"delta:EQUITY-US": 50.123456}, derivative=True))
+    snapshot = market("EQUITY-US")
+    shock = scenario("EQUITY-US", -0.1)
+    expected = StressEngine().run(holdings, snapshot, shock)
+    with localcontext() as caller:
+        caller.prec = 6
+        caller.rounding = ROUND_FLOOR
+        caller.traps[Inexact] = True
+        caller.clear_flags()
+        before = caller.copy()
+        result = StressEngine().run(holdings, snapshot, shock)
+        assert result.model_dump_json() == expected.model_dump_json()
+        assert caller.prec == before.prec
+        assert caller.rounding == before.rounding
+        assert caller.traps == before.traps
+        assert caller.flags == before.flags

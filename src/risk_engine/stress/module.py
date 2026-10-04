@@ -2,7 +2,15 @@
 
 import hashlib
 import json
-from decimal import Decimal
+from decimal import (
+    ROUND_HALF_EVEN,
+    Context,
+    Decimal,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+    localcontext,
+)
 from types import MappingProxyType
 from typing import Protocol
 
@@ -71,7 +79,7 @@ FACTOR_RULE_VERSIONS = MappingProxyType(
         for factor in FACTOR_REGISTRY
     }
 )
-ENGINE_VERSION = "stress-engine-v1"
+ENGINE_VERSION = "stress-engine-v2"
 
 
 def _view(position: Position, exposures: dict[str, float]) -> Position:
@@ -182,6 +190,28 @@ class StressEngine:
     """
 
     def run(
+        self,
+        portfolio: Portfolio,
+        base_market: MarketSnapshot,
+        scenario: StressScenario | NormalizedScenario,
+    ) -> StressResult:
+        # Specify every context setting rather than inheriting caller or DefaultContext.
+        # Include canonical record validation: it also performs Decimal arithmetic.
+        with localcontext(
+            Context(
+                prec=28,
+                rounding=ROUND_HALF_EVEN,
+                Emin=-999999,
+                Emax=999999,
+                capitals=1,
+                clamp=0,
+                flags=[],
+                traps=[InvalidOperation, DivisionByZero, Overflow],
+            )
+        ):
+            return self._run(portfolio, base_market, scenario)
+
+    def _run(
         self,
         portfolio: Portfolio,
         base_market: MarketSnapshot,
