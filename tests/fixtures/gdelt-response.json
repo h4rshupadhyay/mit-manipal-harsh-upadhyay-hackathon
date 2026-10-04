@@ -1,0 +1,14 @@
+{
+  "articles": [
+    {
+      "url": "https://publisher.example/markets/rbi-liquidity-review",
+      "url_mobile": "",
+      "title": "Reserve Bank reviews liquidity conditions after bank funding pressure",
+      "seendate": "20261004T121500Z",
+      "socialimage": "https://publisher.example/images/rbi-review.jpg",
+      "domain": "publisher.example",
+      "language": "English",
+      "sourcecountry": "India"
+    }
+  ]
+}

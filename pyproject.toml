@@ -12,6 +12,7 @@ license = { file = "LICENSE" }
 authors = [{ name = "Harsh Upadhyay" }]
 dependencies = [
   "duckdb==1.2.2",
+  "httpx==0.28.1",
   "pydantic==2.10.6",
 ]
 
