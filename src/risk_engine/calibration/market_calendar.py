@@ -18,6 +18,7 @@ class MarketCalendar(DomainModel):
     version: str
     source: str
     timezone: str
+    open_time: time
     holidays: tuple[date, ...]
 
     @field_validator("timezone")
@@ -42,6 +43,7 @@ class EventClockDecision(DomainModel):
 
     event_local_time: AwareDatetime
     session_date: date
+    open_time: time
     close_time: time
     calendar_id: str
     calendar_version: str
@@ -72,6 +74,10 @@ def map_event_to_session(
         raise ValueError("timestamp must be timezone-aware")
     if close_time.tzinfo is not None:
         raise ValueError("close_time must be a local wall-clock time without timezone")
+    if calendar.open_time.tzinfo is not None:
+        raise ValueError("calendar.open_time must be a local wall-clock time without timezone")
+    if calendar.open_time >= close_time:
+        raise ValueError("market session open_time must precede close_time")
     if evaluation_end is not None and evaluation_end.utcoffset() is None:
         raise ValueError("evaluation_end must be timezone-aware")
 
@@ -95,10 +101,11 @@ def map_event_to_session(
         reason = "after_close" if is_after_close else "closed_day"
 
     session_close = datetime.combine(session_day, close_time, tzinfo=zone)
+    session_open = datetime.combine(session_day, calendar.open_time, tzinfo=zone)
     cutoff = session_close
     if evaluation_end is not None:
         local_evaluation_end = evaluation_end.astimezone(zone)
-        if local_evaluation_end.date() < session_day:
+        if local_evaluation_end < session_open:
             raise ValueError("no eligible market observation within evaluation window")
         cutoff = min(cutoff, local_evaluation_end)
         if cutoff < local_timestamp:
@@ -107,6 +114,7 @@ def map_event_to_session(
     return EventClockDecision(
         event_local_time=local_timestamp,
         session_date=session_day,
+        open_time=calendar.open_time,
         close_time=close_time,
         calendar_id=calendar.calendar_id,
         calendar_version=calendar.version,

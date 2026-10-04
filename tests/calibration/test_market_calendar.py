@@ -14,6 +14,7 @@ def make_calendar(holidays: tuple[date, ...] = ()) -> MarketCalendar:
         version="2026.1",
         source="official exchange schedule",
         timezone="America/New_York",
+        open_time=time(9, 30),
         holidays=holidays,
     )
 
@@ -109,6 +110,16 @@ def test_rejects_evaluation_window_with_no_eligible_session_observation(
 
     with pytest.raises(ValueError, match="no eligible market observation"):
         map_event_to_session(timestamp, calendar, time(16, 0), evaluation_end=evaluation_end)
+
+
+def test_rejects_evaluation_end_before_assigned_session_opens() -> None:
+    with pytest.raises(ValueError, match="no eligible market observation"):
+        map_event_to_session(
+            datetime(2026, 10, 2, 17, 0, tzinfo=NY),
+            make_calendar(),
+            time(16, 0),
+            evaluation_end=datetime(2026, 10, 5, 9, 0, tzinfo=NY),
+        )
 
 
 @pytest.mark.parametrize(
