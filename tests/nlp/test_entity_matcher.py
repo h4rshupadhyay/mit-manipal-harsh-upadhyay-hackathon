@@ -80,10 +80,61 @@ def test_unknown_cashtag_stays_visible_and_blocks_automatic_stress() -> None:
         )
 
 
-def test_unknown_prose_and_empty_text_do_not_invent_entities() -> None:
+@pytest.mark.parametrize(
+    "text", ["Unlisted Fictional Corporation", "Unknown Regional Bank", "FICTIONAL INDUSTRIES LTD"]
+)
+def test_unknown_organization_names_remain_visible_and_block_automatic_stress(text: str) -> None:
+    links = EntityMatcher(CATALOGUE).match(text)
+    assert len(links) == 1
+    assert links[0].evidence == text
+    assert links[0].canonical_name == text
+    assert links[0].entity_id.startswith("unknown:")
+    assert links[0].ambiguous
+    assert links[0].candidate_entity_ids == ()
+    assert links[0].confidence == 0
+    with pytest.raises(ValidationError, match="ambiguous or missing entities"):
+        InterpretedEvent(
+            event_id="event-1",
+            source_item_id="source-1",
+            entity_links=tuple(links),
+            event_class=EventClass.OTHER_UNCERTAIN,
+            sentiment=0,
+            classification_confidence=0,
+            rationale="Unknown issuer",
+            evidence=(text,),
+            eligible_for_automatic_stress=True,
+        )
+
+
+def test_unknown_prose_mentions_follow_source_order_alongside_catalogue_links() -> None:
     matcher = EntityMatcher(CATALOGUE)
-    assert matcher.match("Unlisted Fictional Corporation") == []
+    text = (
+        "Unlisted Fictional Corporation failed; Alpha Bank responded; Unknown Regional Bank fell."
+    )
+    links = matcher.match(text)
+    assert [link.evidence for link in links] == [
+        "Unlisted Fictional Corporation",
+        "Alpha Bank",
+        "Unknown Regional Bank",
+    ]
+    assert [link.ambiguous for link in links] == [True, False, True]
+    assert links == matcher.match(text)
+
+
+def test_ordinary_capitalized_words_and_empty_text_do_not_invent_entities() -> None:
+    matcher = EntityMatcher(CATALOGUE)
+    assert (
+        matcher.match("Markets Fell Monday. Investors Await News. Corporation profits rose.") == []
+    )
     assert matcher.match("") == []
+
+
+def test_organization_shape_does_not_override_a_known_name_after_capitalized_prose() -> None:
+    links = EntityMatcher(CATALOGUE).match("Today Alpha Bank responded.")
+    assert len(links) == 1
+    assert links[0].entity_id == "bank-alpha"
+    assert links[0].evidence == "Alpha Bank"
+    assert not links[0].ambiguous
 
 
 def test_cashtag_sentence_punctuation_is_not_part_of_the_symbol() -> None:

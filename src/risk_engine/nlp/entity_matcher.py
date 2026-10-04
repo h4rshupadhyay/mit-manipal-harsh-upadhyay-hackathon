@@ -34,7 +34,8 @@ class EntityMatcher:
     Results represent mentions in source order. Overlaps prefer the longest span.
     Confidence is a deterministic match indicator, not calibrated model Confidence.
     Unknown cashtags and colliding aliases are ambiguous and cannot auto-stress.
-    Unknown ordinary prose is outside this catalogue-only matcher's scope.
+    Unknown organization-shaped prose (capitalized name plus organization suffix)
+    is retained as unresolved evidence; it is never resolved beyond the catalogue.
     """
 
     def __init__(self, catalogue_path: Path) -> None:
@@ -79,6 +80,23 @@ class EntityMatcher:
                 mentions.setdefault(match.span(), set()).update(entity_ids)
         for match in re.finditer(r"(?<![\w$])\$[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*(?!\w)", normalized):
             mentions.setdefault(match.span(), set())
+        organization_pattern = (
+            r"(?<![\w$])(?:[A-Z][A-Za-z0-9&'-]*\s+){1,5}"
+            r"(?i:Corporation|Corp|Company|Inc|Limited|Ltd|Bank|Holdings|Group|LLC|PLC)(?!\w)"
+        )
+        for match in re.finditer(organization_pattern, text):
+            indices = [
+                index
+                for index, (start, end) in enumerate(offsets)
+                if match.start() <= start and end <= match.end()
+            ]
+            span = (indices[0], indices[-1] + 1)
+            if any(
+                candidates and start < span[1] and span[0] < end
+                for (start, end), candidates in mentions.items()
+            ):
+                continue
+            mentions.setdefault(span, set())
 
         links: list[EntityLink] = []
         previous_end = -1
