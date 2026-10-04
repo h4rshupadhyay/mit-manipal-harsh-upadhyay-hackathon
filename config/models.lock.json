@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0.0",
+  "status": "unresolved",
+  "reason": "No verified local snapshots available. Supply immutable local snapshots to scripts/lock_models.py and create a new resolved lock for replay.",
+  "sentiment": {
+    "model_id": "ProsusAI/finbert",
+    "revision": null,
+    "tokenizer_sha256": null,
+    "config_sha256": null
+  },
+  "event": {
+    "model_id": "MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli",
+    "revision": null,
+    "tokenizer_sha256": null,
+    "config_sha256": null
+  }
+}
