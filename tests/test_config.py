@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from risk_engine.config import AppConfig
+from risk_engine.config import AppConfig, ClusteringConfig
 from risk_engine.domain import EventClass
 
 EVENT_CLASSES = [event_class.value for event_class in EventClass]
@@ -30,6 +30,7 @@ def write_config(
         + "\n\n[taxonomy]\nevent_classes = [\n  "
         + rendered_classes
         + "\n]\n\n[runtime]\noffline_replay = true\n"
+        + "\n[clustering]\nsimilarity_threshold = 0.8\nmax_time_delta_hours = 24\n"
         + "\n[policy]\nimpact_threshold = 8\n",
         encoding="utf-8",
     )
@@ -45,6 +46,8 @@ def test_load_reads_typed_configuration_with_standard_library_toml(
     assert config.versions.model == "models-v1"
     assert config.versions.calibration == "calibration-v1"
     assert config.runtime.offline_replay is True
+    assert config.clustering.similarity_threshold == 0.8
+    assert config.clustering.max_time_delta_hours == 24
     assert config.policy.impact_threshold == 8
 
 
@@ -80,3 +83,19 @@ def test_committed_default_configuration_is_valid() -> None:
     assert config.taxonomy.event_classes == tuple(EventClass)
     assert config.versions.model
     assert config.versions.calibration
+    assert config.clustering.similarity_threshold == 0.8
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"similarity_threshold": 0.0, "max_time_delta_hours": 24},
+        {"similarity_threshold": 1.01, "max_time_delta_hours": 24},
+        {"similarity_threshold": 0.8, "max_time_delta_hours": 0},
+    ],
+)
+def test_clustering_configuration_rejects_invalid_bounds(
+    values: dict[str, float | int],
+) -> None:
+    with pytest.raises(ValidationError):
+        ClusteringConfig.model_validate(values)

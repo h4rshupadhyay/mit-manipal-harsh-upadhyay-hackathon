@@ -43,6 +43,11 @@ class RuntimeConfig(ConfigModel):
     offline_replay: bool = True
 
 
+class ClusteringConfig(ConfigModel):
+    similarity_threshold: float = Field(gt=0.0, le=1.0)
+    max_time_delta_hours: int = Field(gt=0)
+
+
 class PolicyConfig(ConfigModel):
     impact_threshold: int = Field(default=8, ge=1, le=10)
 
@@ -51,6 +56,7 @@ class AppConfig(ConfigModel):
     versions: VersionsConfig
     taxonomy: TaxonomyConfig
     runtime: RuntimeConfig
+    clustering: ClusteringConfig
     policy: PolicyConfig
 
     @classmethod
@@ -59,4 +65,4 @@ class AppConfig(ConfigModel):
             return cls.model_validate(tomllib.load(config_file))
 
 
-__all__ = ["AppConfig"]
+__all__ = ["AppConfig", "ClusteringConfig"]

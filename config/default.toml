@@ -19,5 +19,9 @@ event_classes = [
 [runtime]
 offline_replay = true
 
+[clustering]
+similarity_threshold = 0.8
+max_time_delta_hours = 24
+
 [policy]
 impact_threshold = 8
