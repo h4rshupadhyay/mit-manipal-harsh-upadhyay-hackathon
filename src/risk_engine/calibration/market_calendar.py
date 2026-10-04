@@ -14,6 +14,9 @@ from risk_engine.domain import DomainModel
 class MarketCalendar(DomainModel):
     """A caller-supplied weekday calendar with explicit holidays and timezone."""
 
+    calendar_id: str
+    version: str
+    source: str
     timezone: str
     holidays: tuple[date, ...]
 
@@ -39,6 +42,10 @@ class EventClockDecision(DomainModel):
 
     event_local_time: AwareDatetime
     session_date: date
+    close_time: time
+    calendar_id: str
+    calendar_version: str
+    calendar_source: str
     observation_cutoff: AwareDatetime
     reason: Literal["intraday", "after_close", "closed_day"]
 
@@ -91,11 +98,19 @@ def map_event_to_session(
     cutoff = session_close
     if evaluation_end is not None:
         local_evaluation_end = evaluation_end.astimezone(zone)
+        if local_evaluation_end.date() < session_day:
+            raise ValueError("no eligible market observation within evaluation window")
         cutoff = min(cutoff, local_evaluation_end)
+        if cutoff < local_timestamp:
+            raise ValueError("no eligible market observation within evaluation window")
 
     return EventClockDecision(
         event_local_time=local_timestamp,
         session_date=session_day,
+        close_time=close_time,
+        calendar_id=calendar.calendar_id,
+        calendar_version=calendar.version,
+        calendar_source=calendar.source,
         observation_cutoff=cutoff,
         reason=reason,
     )
