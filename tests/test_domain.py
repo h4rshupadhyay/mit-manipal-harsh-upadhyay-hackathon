@@ -112,6 +112,36 @@ def make_versions(**overrides: object) -> VersionMetadata:
     return VersionMetadata.model_validate(values)
 
 
+def make_required_attribution() -> tuple[StressAttribution, ...]:
+    return (
+        StressAttribution(
+            dimension=AttributionDimension.ASSET,
+            label="loan",
+            loss=Decimal("20"),
+        ),
+        StressAttribution(
+            dimension=AttributionDimension.SECTOR,
+            label="Financials",
+            loss=Decimal("20"),
+        ),
+        StressAttribution(
+            dimension=AttributionDimension.REGION,
+            label="India",
+            loss=Decimal("20"),
+        ),
+        StressAttribution(
+            dimension=AttributionDimension.OBLIGOR,
+            label="Example Bank",
+            loss=Decimal("20"),
+        ),
+        StressAttribution(
+            dimension=AttributionDimension.FACTOR,
+            label="CREDIT-SPREAD",
+            loss=Decimal("20"),
+        ),
+    )
+
+
 def test_event_class_is_the_frozen_eight_value_taxonomy() -> None:
     assert {event_class.value for event_class in EventClass} == {
         "Geopolitical",
@@ -306,17 +336,63 @@ def test_factor_shock_rejects_incompatible_type_and_unit(
 def test_stress_scenario_requires_signal_and_consistent_override_provenance() -> None:
     values = {
         "scenario_id": "scenario-1",
-        "shocks": (),
-        "method": ProvenanceMethod.ANALYST_OVERRIDE,
+        "shocks": (
+            {
+                "factor_id": "CREDIT-SPREAD",
+                "shock_type": ShockType.BASIS_POINT,
+                "value": 75.0,
+                "unit": ShockUnit.BASIS_POINT,
+                "horizon_days": 1,
+            },
+        ),
+        "method": ProvenanceMethod.EMPIRICAL,
+        "reference_event_ids": ("event-1",),
         "calibration_version": "calibration-v1",
-        "analyst_override": False,
+        "analyst_override": True,
+        "override_reason": "Analyst widened the credit-spread shock.",
     }
 
     with pytest.raises(ValidationError):
         StressScenario.model_validate(values)
 
-    with pytest.raises(ValidationError, match="analyst_override"):
-        StressScenario.model_validate({**values, "risk_signal_id": "signal-1"})
+    scenario = StressScenario.model_validate({**values, "risk_signal_id": "signal-1"})
+    assert scenario.method is ProvenanceMethod.EMPIRICAL
+    assert scenario.analyst_override is True
+
+    with pytest.raises(ValidationError, match="override_reason"):
+        StressScenario.model_validate(
+            {**values, "risk_signal_id": "signal-1", "override_reason": None}
+        )
+
+
+def test_required_evidence_and_joint_shock_collections_cannot_be_empty() -> None:
+    with pytest.raises(ValidationError, match="evidence"):
+        make_interpreted_event(evidence=())
+
+    with pytest.raises(ValidationError, match="evidence"):
+        RiskSignal(
+            signal_id="signal-1",
+            source_item_id="source-1",
+            entity=make_entity_link(),
+            sentiment=-0.7,
+            event_class=EventClass.CREDIT_DEFAULT,
+            impact=make_impact(),
+            confidence=0.8,
+            confidence_target=ConfidenceTarget.JOINT_ENTITY_AND_EVENT_CLASS,
+            rationale="Credit conditions deteriorated.",
+            evidence=(),
+            flags=(),
+            versions=make_versions(),
+        )
+
+    with pytest.raises(ValidationError, match="shocks"):
+        StressScenario(
+            scenario_id="scenario-1",
+            risk_signal_id="signal-1",
+            shocks=(),
+            method=ProvenanceMethod.HYPOTHETICAL,
+            calibration_version="calibration-v1",
+        )
 
 
 def test_impact_estimate_rejects_incoherent_range_and_empirical_zero_support() -> None:
@@ -449,13 +525,7 @@ def test_remaining_cross_module_records_are_constructible() -> None:
         absolute_loss=Decimal("50000"),
         percentage_loss=0.05,
         valuation_currency="USD",
-        attribution=(
-            StressAttribution(
-                dimension=AttributionDimension.REGION,
-                label="India",
-                loss=Decimal("50000"),
-            ),
-        ),
+        attribution=make_required_attribution(),
         valuation_coverage=0.95,
         unsupported_position_ids=("position-9",),
         versions=StressResultVersions(
@@ -504,7 +574,7 @@ def make_stress_result_values(**overrides: object) -> dict[str, object]:
         "absolute_loss": Decimal("20"),
         "percentage_loss": 0.20,
         "valuation_currency": "USD",
-        "attribution": (),
+        "attribution": make_required_attribution(),
         "valuation_coverage": 0.8,
         "unsupported_position_ids": ("position-1",),
         "versions": {
@@ -527,6 +597,26 @@ def test_stress_result_rejects_duplicate_unsupported_position_ids() -> None:
     with pytest.raises(ValidationError, match="unsupported_position_ids"):
         StressResult.model_validate(
             make_stress_result_values(unsupported_position_ids=("position-1", "position-1"))
+        )
+
+
+def test_stress_result_rejects_full_coverage_with_unsupported_positions() -> None:
+    with pytest.raises(ValidationError, match="valuation_coverage"):
+        StressResult.model_validate(make_stress_result_values(valuation_coverage=1.0))
+
+
+def test_stress_result_requires_all_attribution_dimensions() -> None:
+    with pytest.raises(ValidationError, match="attribution"):
+        StressResult.model_validate(
+            make_stress_result_values(
+                attribution=(
+                    StressAttribution(
+                        dimension=AttributionDimension.REGION,
+                        label="India",
+                        loss=Decimal("20"),
+                    ),
+                )
+            )
         )
 
 
@@ -564,4 +654,26 @@ def test_hashes_and_currency_codes_use_domain_formats() -> None:
             region="India",
             obligor="Example Bank",
             factor_exposures={},
+        )
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_financial_floats_reject_non_finite_values(value: float) -> None:
+    with pytest.raises(ValidationError):
+        MarketObservation(
+            factor_id="USD-INR",
+            observed_at=NOW,
+            value=value,
+            unit=ShockUnit.ABSOLUTE,
+            provider="fixture",
+            vintage="2026-10-04",
+        )
+
+    with pytest.raises(ValidationError):
+        FactorShock(
+            factor_id="USD-INR",
+            shock_type=ShockType.RELATIVE,
+            value=value,
+            unit=ShockUnit.DECIMAL,
+            horizon_days=1,
         )

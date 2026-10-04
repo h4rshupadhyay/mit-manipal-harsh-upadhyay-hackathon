@@ -24,7 +24,7 @@ ConfigurationScalar: TypeAlias = str | int | float | bool
 class DomainModel(BaseModel):
     """Strict, immutable base for records that cross module seams."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(allow_inf_nan=False, extra="forbid", frozen=True)
 
 
 class EventClass(str, Enum):
@@ -66,7 +66,6 @@ class ShockUnit(str, Enum):
 class ProvenanceMethod(str, Enum):
     EMPIRICAL = "empirical"
     HYPOTHETICAL = "hypothetical"
-    ANALYST_OVERRIDE = "analyst_override"
 
 
 class AssetType(str, Enum):
@@ -187,7 +186,7 @@ class InterpretedEvent(DomainModel):
     sentiment: SentimentScore
     classification_confidence: Probability
     rationale: NonEmptyString
-    evidence: tuple[NonEmptyString, ...]
+    evidence: Annotated[tuple[NonEmptyString, ...], Field(min_length=1)]
     eligible_for_automatic_stress: bool
 
     @model_validator(mode="after")
@@ -242,7 +241,7 @@ class RiskSignal(DomainModel):
     confidence: Probability
     confidence_target: ConfidenceTarget
     rationale: NonEmptyString
-    evidence: tuple[NonEmptyString, ...]
+    evidence: Annotated[tuple[NonEmptyString, ...], Field(min_length=1)]
     flags: tuple[SignalFlag, ...]
     versions: VersionMetadata
     portfolio_materiality: PortfolioMateriality | None = None
@@ -277,19 +276,19 @@ class FactorShock(DomainModel):
 class StressScenario(DomainModel):
     scenario_id: NonEmptyString
     risk_signal_id: NonEmptyString
-    shocks: tuple[FactorShock, ...]
+    shocks: Annotated[tuple[FactorShock, ...], Field(min_length=1)]
     method: ProvenanceMethod
     reference_event_ids: tuple[NonEmptyString, ...] = ()
     calibration_version: NonEmptyString
     analyst_override: bool = False
+    override_reason: NonEmptyString | None = None
 
     @model_validator(mode="after")
     def shocks_have_unique_factor_ids(self) -> StressScenario:
         _require_unique_ids(self.shocks, "factor_id")
         _require_unique_values(self.reference_event_ids, "reference_event_ids")
-        expected_override = self.method is ProvenanceMethod.ANALYST_OVERRIDE
-        if self.analyst_override is not expected_override:
-            raise ValueError("analyst_override must match analyst_override provenance method")
+        if self.analyst_override is not (self.override_reason is not None):
+            raise ValueError("override_reason is required exactly when analyst_override is true")
         if self.method is ProvenanceMethod.EMPIRICAL and not self.reference_event_ids:
             raise ValueError("empirical scenarios require reference_event_ids")
         return self
@@ -351,6 +350,22 @@ class StressResult(DomainModel):
         _require_unique_values(self.unsupported_position_ids, "unsupported_position_ids")
         attribution_keys = tuple(f"{row.dimension.value}:{row.label}" for row in self.attribution)
         _require_unique_values(attribution_keys, "attribution dimension and label")
+        dimensions = {row.dimension for row in self.attribution}
+        required_dimensions = {
+            AttributionDimension.ASSET,
+            AttributionDimension.SECTOR,
+            AttributionDimension.REGION,
+            AttributionDimension.FACTOR,
+        }
+        has_obligor_or_facility = bool(
+            dimensions & {AttributionDimension.OBLIGOR, AttributionDimension.FACILITY}
+        )
+        if not required_dimensions <= dimensions or not has_obligor_or_facility:
+            raise ValueError(
+                "attribution must include asset, sector, region, obligor/facility, and factor"
+            )
+        if self.unsupported_position_ids and self.valuation_coverage >= 1.0:
+            raise ValueError("valuation_coverage must be below 1 with unsupported positions")
         if self.base_value - self.stressed_value != self.absolute_loss:
             raise ValueError("absolute_loss must equal base_value minus stressed_value")
         if self.base_value == 0:
