@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from enum import Enum
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -16,6 +17,17 @@ _COMPARABLE_ADJUSTMENT_UNITS = frozenset(
 )
 
 
+class MeasurementDimension(str, Enum):
+    """Economic quantity measured by a series, independent of its numeric unit."""
+
+    RETURN = "return"
+    YIELD = "yield"
+    SPREAD = "spread"
+    VOLATILITY = "volatility"
+    PRICE = "price"
+    CURRENCY = "currency"
+
+
 class ReturnObservation(DomainModel):
     """One session's movement in its declared native unit and source identity."""
 
@@ -27,6 +39,7 @@ class ReturnObservation(DomainModel):
     snapshot_id: NonEmptyString
     series_version: NonEmptyString
     unit: ShockUnit
+    measurement_dimension: MeasurementDimension
 
 
 class EventStudyEvent(DomainModel):
@@ -70,12 +83,14 @@ class AbnormalReturn(DomainModel):
     session_date: date
     value: float
     unit: ShockUnit
+    measurement_dimension: MeasurementDimension
 
 
 class WindowReaction(DomainModel):
     window: EventWindow
     car: float
     unit: ShockUnit
+    measurement_dimension: MeasurementDimension
 
 
 class EventReaction(DomainModel):
@@ -88,6 +103,8 @@ class EventReaction(DomainModel):
     beta: float
     factor_unit: ShockUnit
     benchmark_unit: ShockUnit
+    factor_dimension: MeasurementDimension
+    benchmark_dimension: MeasurementDimension
     abnormal_returns: tuple[AbnormalReturn, ...]
     windows: tuple[WindowReaction, ...]
     estimation_factor_observations: tuple[ReturnObservation, ...]
@@ -119,6 +136,8 @@ def _index_series(
         raise ValueError("mixed series IDs in market observations")
     if len({row.unit for row in observations}) > 1:
         raise ValueError("mixed units in market observations")
+    if len({row.measurement_dimension for row in observations}) > 1:
+        raise ValueError("mixed measurement dimensions in market observations")
     for row in observations:
         if row.session_date in by_date:
             raise ValueError(f"duplicate market observation on {row.session_date}")
@@ -170,6 +189,8 @@ def compute_event_reaction(
             raise ValueError(f"missing event-window observation on {day}")
     factor_unit = factor[event_dates[0]].unit
     benchmark_unit = benchmark[event_dates[0]].unit
+    factor_dimension = factor[event_dates[0]].measurement_dimension
+    benchmark_dimension = benchmark[event_dates[0]].measurement_dimension
 
     estimation_offsets = range(
         -spec.estimation_gap_sessions - spec.estimation_sessions,
@@ -196,9 +217,14 @@ def compute_event_reaction(
         alpha, beta = float(fit.params[0]), float(fit.params[1])
         method: Literal["market_model", "market_adjusted"] = "market_model"
     else:
-        if factor_unit != benchmark_unit or factor_unit not in _COMPARABLE_ADJUSTMENT_UNITS:
+        if (
+            factor_unit != benchmark_unit
+            or factor_unit not in _COMPARABLE_ADJUSTMENT_UNITS
+            or factor_dimension != benchmark_dimension
+        ):
             raise ValueError(
-                "market-adjusted fallback requires comparable factor and benchmark units"
+                "market-adjusted fallback requires comparable factor and benchmark units "
+                "and dimensions"
             )
         alpha, beta = 0.0, 1.0
         method = "market_adjusted"
@@ -209,6 +235,7 @@ def compute_event_reaction(
             session_date=day,
             value=factor[day].value - (alpha + beta * benchmark[day].value),
             unit=factor_unit,
+            measurement_dimension=factor_dimension,
         )
         for offset, day in zip(event_offsets, event_dates, strict=True)
     )
@@ -221,6 +248,7 @@ def compute_event_reaction(
                 if window.start <= row.session_offset <= window.end
             ),
             unit=factor_unit,
+            measurement_dimension=factor_dimension,
         )
         for window in spec.windows
     )
@@ -234,6 +262,8 @@ def compute_event_reaction(
         beta=beta,
         factor_unit=factor_unit,
         benchmark_unit=benchmark_unit,
+        factor_dimension=factor_dimension,
+        benchmark_dimension=benchmark_dimension,
         abnormal_returns=abnormal,
         windows=windows,
         estimation_factor_observations=estimation_factor,

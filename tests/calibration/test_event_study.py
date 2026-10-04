@@ -54,12 +54,13 @@ def inputs():
             ReturnObservation(
                 series_id=kind,
                 session_date=date.fromisoformat(row["session_date"]),
-                value=float(row["return_decimal"]),
+                value=float(row["value"]),
                 observed_at=datetime.fromisoformat(row["observed_at"]),
                 provider=row["provider"],
                 snapshot_id=row["snapshot_id"],
                 series_version=row["series_version"],
-                unit=ShockUnit.DECIMAL,
+                unit=ShockUnit(row["unit"]),
+                measurement_dimension=row["measurement_dimension"],
             )
             for row in rows
             if row["series"] == kind
@@ -78,6 +79,8 @@ def test_known_alpha_beta_and_all_registered_windows():
     assert result.alpha == pytest.approx(0.002)
     assert result.beta == pytest.approx(1.5)
     assert result.alpha_unit == ShockUnit.DECIMAL
+    assert result.factor_dimension == "return"
+    assert result.benchmark_dimension == "return"
     assert result.abnormal_returns[0].value == pytest.approx(0.001)
     assert result.abnormal_returns[2].value == pytest.approx(0.01)
     assert [(item.window.start, item.window.end) for item in result.windows] == [
@@ -184,13 +187,21 @@ def test_native_basis_point_units_survive_market_model_and_car():
     event, factor, benchmark, spec = inputs()
     factor_bps = tuple(
         ReturnObservation.model_validate(
-            row.model_dump() | {"value": row.value * 10_000, "unit": ShockUnit.BASIS_POINT}
+            row.model_dump() | {
+                "value": row.value * 10_000,
+                "unit": ShockUnit.BASIS_POINT,
+                "measurement_dimension": "yield",
+            }
         )
         for row in factor
     )
     benchmark_bps = tuple(
         ReturnObservation.model_validate(
-            row.model_dump() | {"value": row.value * 10_000, "unit": ShockUnit.BASIS_POINT}
+            row.model_dump() | {
+                "value": row.value * 10_000,
+                "unit": ShockUnit.BASIS_POINT,
+                "measurement_dimension": "yield",
+            }
         )
         for row in benchmark
     )
@@ -202,12 +213,16 @@ def test_native_basis_point_units_survive_market_model_and_car():
     assert result.alpha_unit == ShockUnit.BASIS_POINT
     assert result.factor_unit == ShockUnit.BASIS_POINT
     assert result.benchmark_unit == ShockUnit.BASIS_POINT
+    assert result.factor_dimension == "yield"
+    assert result.benchmark_dimension == "yield"
     assert result.event_factor_observations[2].value == pytest.approx(420)
     assert result.event_factor_observations[2].unit == ShockUnit.BASIS_POINT
     assert result.abnormal_returns[2].value == pytest.approx(100)
     assert result.abnormal_returns[2].unit == ShockUnit.BASIS_POINT
+    assert result.abnormal_returns[2].measurement_dimension == "yield"
     assert [item.car for item in result.windows] == pytest.approx([100, 60, 80, 120])
     assert all(item.unit == ShockUnit.BASIS_POINT for item in result.windows)
+    assert all(item.measurement_dimension == "yield" for item in result.windows)
 
 
 def test_market_adjusted_fallback_rejects_incomparable_numeric_units():
@@ -240,3 +255,60 @@ def test_market_adjusted_fallback_rejects_ambiguous_absolute_units():
 
     with pytest.raises(ValueError, match="market-adjusted.*unit"):
         compute_event_reaction(event, factor_absolute, benchmark_absolute, spec)
+
+
+def test_market_adjusted_fallback_rejects_equal_bps_of_different_dimensions():
+    event, factor, benchmark, spec = inputs()
+    factor_yield = tuple(
+        ReturnObservation.model_validate(
+            row.model_dump() | {
+                "value": row.value * 10_000,
+                "unit": ShockUnit.BASIS_POINT,
+                "measurement_dimension": "yield",
+            }
+        )
+        for row in factor[4:]
+    )
+    benchmark_spread = tuple(
+        ReturnObservation.model_validate(
+            row.model_dump() | {
+                "value": row.value * 10_000,
+                "unit": ShockUnit.BASIS_POINT,
+                "measurement_dimension": "spread",
+            }
+        )
+        for row in benchmark[4:]
+    )
+
+    with pytest.raises(ValueError, match="market-adjusted.*dimension"):
+        compute_event_reaction(event, factor_yield, benchmark_spread, spec)
+
+
+def test_market_model_retains_distinct_factor_and_benchmark_dimensions():
+    event, factor, benchmark, spec = inputs()
+    factor_yield = tuple(
+        ReturnObservation.model_validate(
+            row.model_dump() | {
+                "value": row.value * 10_000,
+                "unit": ShockUnit.BASIS_POINT,
+                "measurement_dimension": "yield",
+            }
+        )
+        for row in factor
+    )
+    benchmark_spread = tuple(
+        ReturnObservation.model_validate(
+            row.model_dump() | {
+                "value": row.value * 10_000,
+                "unit": ShockUnit.BASIS_POINT,
+                "measurement_dimension": "spread",
+            }
+        )
+        for row in benchmark
+    )
+
+    result = compute_event_reaction(event, factor_yield, benchmark_spread, spec)
+
+    assert result.method == "market_model"
+    assert result.factor_dimension == "yield"
+    assert result.benchmark_dimension == "spread"
