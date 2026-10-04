@@ -18,6 +18,7 @@ from risk_engine.calibration.market_calendar import (
     MarketCalendar,
     map_event_to_session,
 )
+from risk_engine.domain import ShockUnit
 
 NY = ZoneInfo("America/New_York")
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "market-series.csv"
@@ -53,12 +54,12 @@ def inputs():
             ReturnObservation(
                 series_id=kind,
                 session_date=date.fromisoformat(row["session_date"]),
-                return_decimal=float(row["return_decimal"]),
+                value=float(row["return_decimal"]),
                 observed_at=datetime.fromisoformat(row["observed_at"]),
                 provider=row["provider"],
                 snapshot_id=row["snapshot_id"],
                 series_version=row["series_version"],
-                unit="decimal_return",
+                unit=ShockUnit.DECIMAL,
             )
             for row in rows
             if row["series"] == kind
@@ -76,12 +77,13 @@ def test_known_alpha_beta_and_all_registered_windows():
     assert result.method == "market_model"
     assert result.alpha == pytest.approx(0.002)
     assert result.beta == pytest.approx(1.5)
-    assert result.abnormal_returns[0].return_decimal == pytest.approx(0.001)
-    assert result.abnormal_returns[2].return_decimal == pytest.approx(0.01)
+    assert result.alpha_unit == ShockUnit.DECIMAL
+    assert result.abnormal_returns[0].value == pytest.approx(0.001)
+    assert result.abnormal_returns[2].value == pytest.approx(0.01)
     assert [(item.window.start, item.window.end) for item in result.windows] == [
         (0, 0), (0, 1), (-1, 1), (-2, 2)
     ]
-    assert [item.car_decimal for item in result.windows] == pytest.approx(
+    assert [item.car for item in result.windows] == pytest.approx(
         [0.01, 0.006, 0.008, 0.012]
     )
     assert result.estimation_factor_observations == factor[:4]
@@ -100,7 +102,7 @@ def test_missing_estimation_data_uses_declared_market_adjusted_fallback():
     assert result.method == "market_adjusted"
     assert result.alpha == 0.0
     assert result.beta == 1.0
-    assert result.windows[0].car_decimal == pytest.approx(0.022)
+    assert result.windows[0].car == pytest.approx(0.022)
     assert result.estimation_factor_observations == ()
 
 
@@ -130,7 +132,7 @@ def test_missing_event_window_observation_is_rejected(series):
 def test_gap_sessions_are_excluded_from_estimation():
     event, factor, benchmark, spec = inputs()
     disturbed = tuple(
-        row.model_copy(update={"return_decimal": 0.9})
+        row.model_copy(update={"value": 0.9})
         if row.session_date in {date(2026, 10, 1), date(2026, 10, 2)}
         else row
         for row in factor
@@ -176,3 +178,65 @@ def test_mixed_factor_series_is_rejected():
 
     with pytest.raises(ValueError, match="mixed series"):
         compute_event_reaction(event, mixed, benchmark, spec)
+
+
+def test_native_basis_point_units_survive_market_model_and_car():
+    event, factor, benchmark, spec = inputs()
+    factor_bps = tuple(
+        ReturnObservation.model_validate(
+            row.model_dump() | {"value": row.value * 10_000, "unit": ShockUnit.BASIS_POINT}
+        )
+        for row in factor
+    )
+    benchmark_bps = tuple(
+        ReturnObservation.model_validate(
+            row.model_dump() | {"value": row.value * 10_000, "unit": ShockUnit.BASIS_POINT}
+        )
+        for row in benchmark
+    )
+
+    result = compute_event_reaction(event, factor_bps, benchmark_bps, spec)
+
+    assert result.method == "market_model"
+    assert result.alpha == pytest.approx(20)
+    assert result.alpha_unit == ShockUnit.BASIS_POINT
+    assert result.factor_unit == ShockUnit.BASIS_POINT
+    assert result.benchmark_unit == ShockUnit.BASIS_POINT
+    assert result.event_factor_observations[2].value == pytest.approx(420)
+    assert result.event_factor_observations[2].unit == ShockUnit.BASIS_POINT
+    assert result.abnormal_returns[2].value == pytest.approx(100)
+    assert result.abnormal_returns[2].unit == ShockUnit.BASIS_POINT
+    assert [item.car for item in result.windows] == pytest.approx([100, 60, 80, 120])
+    assert all(item.unit == ShockUnit.BASIS_POINT for item in result.windows)
+
+
+def test_market_adjusted_fallback_rejects_incomparable_numeric_units():
+    event, factor, benchmark, spec = inputs()
+    factor_bps = tuple(
+        ReturnObservation.model_validate(
+            row.model_dump() | {"value": row.value * 10_000, "unit": ShockUnit.BASIS_POINT}
+        )
+        for row in factor[4:]
+    )
+
+    with pytest.raises(ValueError, match="market-adjusted.*unit"):
+        compute_event_reaction(event, factor_bps, benchmark[4:], spec)
+
+
+def test_market_adjusted_fallback_rejects_ambiguous_absolute_units():
+    event, factor, benchmark, spec = inputs()
+    factor_absolute = tuple(
+        ReturnObservation.model_validate(
+            row.model_dump() | {"unit": ShockUnit.ABSOLUTE}
+        )
+        for row in factor[4:]
+    )
+    benchmark_absolute = tuple(
+        ReturnObservation.model_validate(
+            row.model_dump() | {"unit": ShockUnit.ABSOLUTE}
+        )
+        for row in benchmark[4:]
+    )
+
+    with pytest.raises(ValueError, match="market-adjusted.*unit"):
+        compute_event_reaction(event, factor_absolute, benchmark_absolute, spec)

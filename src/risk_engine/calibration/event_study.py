@@ -9,20 +9,24 @@ from zoneinfo import ZoneInfo
 from pydantic import AwareDatetime, Field, model_validator
 
 from risk_engine.calibration.market_calendar import EventClockDecision, MarketCalendar
-from risk_engine.domain import DomainModel, NonEmptyString
+from risk_engine.domain import DomainModel, NonEmptyString, ShockUnit
+
+_COMPARABLE_ADJUSTMENT_UNITS = frozenset(
+    {ShockUnit.DECIMAL, ShockUnit.PERCENT, ShockUnit.BASIS_POINT, ShockUnit.VOLATILITY_POINT}
+)
 
 
 class ReturnObservation(DomainModel):
-    """One session's decimal return, with the raw source identity preserved."""
+    """One session's movement in its declared native unit and source identity."""
 
     series_id: NonEmptyString
     session_date: date
-    return_decimal: float
+    value: float
     observed_at: AwareDatetime
     provider: NonEmptyString
     snapshot_id: NonEmptyString
     series_version: NonEmptyString
-    unit: Literal["decimal_return"]
+    unit: ShockUnit
 
 
 class EventStudyEvent(DomainModel):
@@ -64,12 +68,14 @@ class EventStudySpec(DomainModel):
 class AbnormalReturn(DomainModel):
     session_offset: int
     session_date: date
-    return_decimal: float
+    value: float
+    unit: ShockUnit
 
 
 class WindowReaction(DomainModel):
     window: EventWindow
-    car_decimal: float
+    car: float
+    unit: ShockUnit
 
 
 class EventReaction(DomainModel):
@@ -78,7 +84,10 @@ class EventReaction(DomainModel):
     clock_decision: EventClockDecision
     method: Literal["market_model", "market_adjusted"]
     alpha: float
+    alpha_unit: ShockUnit
     beta: float
+    factor_unit: ShockUnit
+    benchmark_unit: ShockUnit
     abnormal_returns: tuple[AbnormalReturn, ...]
     windows: tuple[WindowReaction, ...]
     estimation_factor_observations: tuple[ReturnObservation, ...]
@@ -108,6 +117,8 @@ def _index_series(
     series_ids = {row.series_id for row in observations}
     if len(series_ids) > 1:
         raise ValueError("mixed series IDs in market observations")
+    if len({row.unit for row in observations}) > 1:
+        raise ValueError("mixed units in market observations")
     for row in observations:
         if row.session_date in by_date:
             raise ValueError(f"duplicate market observation on {row.session_date}")
@@ -157,6 +168,8 @@ def compute_event_reaction(
     for day in event_dates:
         if day not in factor or day not in benchmark:
             raise ValueError(f"missing event-window observation on {day}")
+    factor_unit = factor[event_dates[0]].unit
+    benchmark_unit = benchmark[event_dates[0]].unit
 
     estimation_offsets = range(
         -spec.estimation_gap_sessions - spec.estimation_sessions,
@@ -168,7 +181,7 @@ def compute_event_reaction(
     complete_estimation = all(day in factor and day in benchmark for day in estimation_dates)
     estimation_factor = tuple(factor[day] for day in estimation_dates if day in factor)
     estimation_benchmark = tuple(benchmark[day] for day in estimation_dates if day in benchmark)
-    distinct_market_returns = {row.return_decimal for row in estimation_benchmark}
+    distinct_market_returns = {row.value for row in estimation_benchmark}
     if (
         complete_estimation
         and len(estimation_factor) >= spec.minimum_estimation_pairs
@@ -177,12 +190,16 @@ def compute_event_reaction(
         import statsmodels.api as sm  # type: ignore[import-untyped]
 
         explanatory = sm.add_constant(
-            [row.return_decimal for row in estimation_benchmark], has_constant="add"
+            [row.value for row in estimation_benchmark], has_constant="add"
         )
-        fit = sm.OLS([row.return_decimal for row in estimation_factor], explanatory).fit()
+        fit = sm.OLS([row.value for row in estimation_factor], explanatory).fit()
         alpha, beta = float(fit.params[0]), float(fit.params[1])
         method: Literal["market_model", "market_adjusted"] = "market_model"
     else:
+        if factor_unit != benchmark_unit or factor_unit not in _COMPARABLE_ADJUSTMENT_UNITS:
+            raise ValueError(
+                "market-adjusted fallback requires comparable factor and benchmark units"
+            )
         alpha, beta = 0.0, 1.0
         method = "market_adjusted"
 
@@ -190,20 +207,20 @@ def compute_event_reaction(
         AbnormalReturn(
             session_offset=offset,
             session_date=day,
-            return_decimal=(
-                factor[day].return_decimal - (alpha + beta * benchmark[day].return_decimal)
-            ),
+            value=factor[day].value - (alpha + beta * benchmark[day].value),
+            unit=factor_unit,
         )
         for offset, day in zip(event_offsets, event_dates, strict=True)
     )
     windows = tuple(
         WindowReaction(
             window=window,
-            car_decimal=sum(
-                row.return_decimal
+            car=sum(
+                row.value
                 for row in abnormal
                 if window.start <= row.session_offset <= window.end
             ),
+            unit=factor_unit,
         )
         for window in spec.windows
     )
@@ -213,7 +230,10 @@ def compute_event_reaction(
         clock_decision=decision,
         method=method,
         alpha=alpha,
+        alpha_unit=factor_unit,
         beta=beta,
+        factor_unit=factor_unit,
+        benchmark_unit=benchmark_unit,
         abnormal_returns=abnormal,
         windows=windows,
         estimation_factor_observations=estimation_factor,
