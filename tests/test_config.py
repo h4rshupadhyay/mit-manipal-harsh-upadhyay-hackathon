@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from risk_engine.config import AnalogueConfig, AppConfig, ClusteringConfig
+from risk_engine.config import AnalogueConfig, AppConfig, ClusteringConfig, PolicyConfig
 from risk_engine.domain import EventClass
 
 EVENT_CLASSES = [event_class.value for event_class in EventClass]
@@ -162,3 +162,93 @@ def test_analogue_config_rejects_inconsistent_frozen_rules(damage: str) -> None:
         payload["levels"][1]["fields"] = payload["levels"][0]["fields"]
     with pytest.raises(ValidationError):
         AnalogueConfig.model_validate(payload)
+
+
+def test_older_and_default_policy_are_explicitly_unselected(tmp_path: Path) -> None:
+    assert AppConfig.load(write_config(tmp_path / "older-policy.toml")).policy.selected is None
+    assert AppConfig.load(Path("config/default.toml")).policy.selected is None
+
+
+def selected_policy_payload() -> dict:
+    return {
+        "version": "fixture-policy-v1",
+        "validation_status": "chronologically_validated",
+        "evidence_kind": "empirical",
+        "selection_protocol": "nested_chronological_development",
+        "development_start": "2025-01-01T00:00:00Z",
+        "development_end": "2025-01-02T00:00:00Z",
+        "frozen_at": "2025-01-03T00:00:00Z",
+        "validation_evidence": "project-authored fixture reference",
+        "evidence_hash": "a" * 64,
+        "snapshot_id": "fixture-snapshot-v1",
+        "source_terms": "project-authored synthetic fixture",
+        "confidence_target": "entity_and_event_class_joint_correctness",
+        "calibration_version": "fixture-confidence-v1",
+        "confidence_threshold": "0.85",
+        "economic_floor": "100",
+        "materiality_tolerance": "0.01",
+        "currency": "USD",
+    }
+
+
+def test_selected_policy_loads_through_typed_app_config() -> None:
+    payload = AppConfig.load(Path("config/default.toml")).model_dump(by_alias=True)
+    payload["policy"]["selected"] = selected_policy_payload()
+    selected = AppConfig.model_validate(payload).policy.selected
+    assert selected is not None
+    assert str(selected.economic_floor) == "100"
+    assert selected.calibration_version == "fixture-confidence-v1"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("evidence_kind", "synthetic"),
+        ("selection_protocol", "final"),
+        ("validation_status", "bootstrap_unvalidated"),
+        ("development_end", "2025-01-04T00:00:00Z"),
+        ("development_start", "2025-01-02T12:00:00Z"),
+        ("frozen_at", "2025-01-03T00:00:00"),
+        ("confidence_threshold", "NaN"),
+        ("confidence_threshold", "0"),
+        ("economic_floor", "0"),
+        ("economic_floor", "Infinity"),
+        ("materiality_tolerance", "-0.01"),
+        ("materiality_tolerance", "100"),
+        ("currency", "usd"),
+        ("confidence_target", "event_class_only"),
+        ("evidence_hash", "fake"),
+        ("calibration_version", " "),
+        ("unexpected", True),
+    ],
+)
+def test_selected_policy_rejects_incomplete_or_inconsistent_metadata(
+    field: str, value: str | bool
+) -> None:
+    selected = selected_policy_payload()
+    selected[field] = value
+    with pytest.raises(ValidationError):
+        PolicyConfig.model_validate({"selected": selected})
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "confidence_threshold",
+        "economic_floor",
+        "evidence_hash",
+        "frozen_at",
+        "validation_evidence",
+        "currency",
+    ],
+)
+def test_selected_policy_never_fills_silent_defaults(missing: str) -> None:
+    selected = selected_policy_payload()
+    del selected[missing]
+    with pytest.raises(ValidationError):
+        PolicyConfig.model_validate({"selected": selected})
+
+
+def test_policy_retains_required_impact_score_eight() -> None:
+    with pytest.raises(ValidationError):
+        PolicyConfig(impact_threshold=7)

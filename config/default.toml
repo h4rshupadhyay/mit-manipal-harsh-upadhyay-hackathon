@@ -25,6 +25,9 @@ max_time_delta_hours = 24
 
 [policy]
 impact_threshold = 8
+# Automatic policy is explicitly unselected: no real chronological development
+# evidence currently selects a Confidence threshold or economic materiality floor.
+# The absent policy.selected table loads as None and automatic proposals abstain.
 
 # Development candidates only: no chronological selection has been performed.
 [analogues]

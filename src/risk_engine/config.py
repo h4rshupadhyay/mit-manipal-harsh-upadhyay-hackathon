@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -12,7 +13,7 @@ except ModuleNotFoundError:  # pragma: no cover - local Python 3.10 compatibilit
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-from risk_engine.domain import EventClass
+from risk_engine.domain import ConfidenceTarget, CurrencyCode, EventClass, Sha256Hex
 
 NonEmptyString = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
@@ -48,8 +49,45 @@ class ClusteringConfig(ConfigModel):
     max_time_delta_hours: int = Field(gt=0)
 
 
+class SelectedTriggerPolicy(ConfigModel):
+    """Governed development selection; declarations require externally audited evidence.
+
+    This record validates completeness and chronology, not the truth of an
+    empirical claim. Synthetic fixtures cannot establish a production selection.
+    Floor and absolute tolerance are denominated in the declared currency.
+    """
+
+    version: NonEmptyString
+    validation_status: Literal["chronologically_validated"]
+    evidence_kind: Literal["empirical"]
+    selection_protocol: Literal["nested_chronological_development"]
+    development_start: AwareDatetime
+    development_end: AwareDatetime
+    frozen_at: AwareDatetime
+    validation_evidence: NonEmptyString
+    evidence_hash: Sha256Hex
+    snapshot_id: NonEmptyString
+    source_terms: NonEmptyString
+    confidence_target: Literal[ConfidenceTarget.JOINT_ENTITY_AND_EVENT_CLASS]
+    calibration_version: NonEmptyString
+    confidence_threshold: Decimal = Field(gt=0, le=1, allow_inf_nan=False)
+    economic_floor: Decimal = Field(gt=0, allow_inf_nan=False)
+    materiality_tolerance: Decimal = Field(ge=0, allow_inf_nan=False)
+    currency: CurrencyCode
+
+    @model_validator(mode="after")
+    def selection_is_consistent(self) -> SelectedTriggerPolicy:
+        if not self.development_start <= self.development_end <= self.frozen_at:
+            raise ValueError("development window must end by frozen_at")
+        if self.materiality_tolerance >= self.economic_floor:
+            raise ValueError("materiality_tolerance must be below economic_floor")
+        return self
+
+
 class PolicyConfig(ConfigModel):
-    impact_threshold: int = Field(default=8, ge=1, le=10)
+    # Requirement-driven contract, distinct from empirically selected gates.
+    impact_threshold: Literal[8] = 8
+    selected: SelectedTriggerPolicy | None = None
 
 
 MatchingField = Literal["event_class", "subtype", "region", "sector", "exposure_type"]
