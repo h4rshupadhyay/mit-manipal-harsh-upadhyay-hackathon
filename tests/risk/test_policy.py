@@ -1,5 +1,6 @@
 """Synthetic policy fixtures exercise gates, not empirical policy selection."""
 
+import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, localcontext
 
@@ -273,3 +274,101 @@ def test_floor_boundary_is_independent_of_ambient_decimal_exponent_limits() -> N
         context.Emax = 0
         assert policy().evaluate(signal(), materiality("99.99")).automatic_trigger
         assert not policy().evaluate(signal(), materiality("99.989")).automatic_trigger
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "missing_gates",
+        "partial_gates",
+        "duplicate_gate",
+        "gate_order",
+        "gate_result",
+        "gate_reason",
+        "unselected_policy",
+        "future_policy",
+        "ambiguous_input",
+        "calibration_input",
+        "materiality_input",
+        "currency_input",
+        "signal_id",
+        "source_item_id",
+        "signal_versions",
+        "impact_score",
+        "confidence",
+        "action_priority",
+        "automatic_status",
+        "combined_status",
+    ],
+)
+def test_restored_decision_rejects_corrupted_gate_evidence_or_summaries(damage: str) -> None:
+    payload = json.loads(policy().evaluate(signal(), materiality()).model_dump_json())
+    if damage == "missing_gates":
+        payload["gates"] = []
+    elif damage == "partial_gates":
+        payload["gates"].pop()
+    elif damage == "duplicate_gate":
+        payload["gates"][-1] = payload["gates"][0]
+    elif damage == "gate_order":
+        payload["gates"].reverse()
+    elif damage == "gate_result":
+        payload["gates"][0]["passed"] = False
+    elif damage == "gate_reason":
+        payload["gates"][0]["reason"] = "Automatic policy is unselected"
+    elif damage == "unselected_policy":
+        payload["policy_config"]["selected"] = None
+    elif damage == "future_policy":
+        payload["as_of"] = "2025-01-02T00:00:00Z"
+    elif damage == "ambiguous_input":
+        payload["risk_signal"]["entity"]["ambiguous"] = True
+    elif damage == "calibration_input":
+        payload["risk_signal"]["versions"]["calibration_version"] = "other"
+        payload["signal_versions"]["calibration_version"] = "other"
+    elif damage == "materiality_input":
+        payload["portfolio_materiality"]["absolute_loss"] = "1"
+    elif damage == "currency_input":
+        payload["portfolio_materiality"]["currency"] = "INR"
+    elif damage in {"signal_id", "source_item_id"}:
+        payload[damage] = "other"
+    elif damage == "signal_versions":
+        payload["signal_versions"]["snapshot_version"] = "other"
+    elif damage == "impact_score":
+        payload["impact_score"] = 1
+    elif damage == "confidence":
+        payload["confidence"] = 0.1
+    elif damage == "action_priority":
+        payload["action_priority"] = None
+    elif damage == "automatic_status":
+        payload["automatic_trigger"] = False
+    else:
+        payload["triggered"] = False
+    with pytest.raises(ValidationError):
+        TriggerDecision.model_validate_json(json.dumps(payload))
+
+
+def test_restored_decision_rejects_fabricated_automatic_and_manual_statuses() -> None:
+    result = TriggerPolicy(PolicyConfig(), as_of=TIME).evaluate(
+        signal(),
+        materiality(),
+        manual_override=ManualOverride(analyst_id="analyst-1", reason="Run sensitivity"),
+    )
+    assert TriggerDecision.model_validate_json(result.model_dump_json()) == result
+    payload = json.loads(result.model_dump_json())
+    payload["automatic_trigger"] = True
+    with pytest.raises(ValidationError):
+        TriggerDecision.model_validate_json(json.dumps(payload))
+    payload["automatic_trigger"] = False
+    payload["manual_override"] = None
+    with pytest.raises(ValidationError):
+        TriggerDecision.model_validate_json(json.dumps(payload))
+
+
+def test_restored_failed_gate_rejects_false_success_reason() -> None:
+    result = TriggerPolicy(PolicyConfig(), as_of=TIME).evaluate(signal(), materiality())
+    assert TriggerDecision.model_validate_json(result.model_dump_json()) == result
+    payload = json.loads(result.model_dump_json())
+    payload["gates"][0]["reason"] = (
+        "Empirical chronological development selection is declared with evidence metadata"
+    )
+    with pytest.raises(ValidationError):
+        TriggerDecision.model_validate_json(json.dumps(payload))

@@ -11,7 +11,7 @@ from datetime import datetime
 from decimal import MAX_EMAX, MIN_EMIN, Context, Decimal, localcontext
 from typing import Literal
 
-from pydantic import AwareDatetime
+from pydantic import AwareDatetime, model_validator
 
 from risk_engine.config import PolicyConfig
 from risk_engine.domain import (
@@ -67,6 +67,43 @@ class TriggerDecision(DomainModel):
     manual_override: ManualOverride | None
     triggered: bool
 
+    @model_validator(mode="after")
+    def audit_record_is_consistent(self) -> TriggerDecision:
+        signal = self.risk_signal
+        if (
+            self.signal_id,
+            self.source_item_id,
+            self.signal_versions,
+            self.impact_score,
+            self.confidence,
+            self.confidence_target,
+            self.action_priority,
+        ) != (
+            signal.signal_id,
+            signal.source_item_id,
+            signal.versions,
+            signal.impact.impact_score,
+            signal.confidence,
+            signal.confidence_target,
+            signal.action_priority,
+        ):
+            raise ValueError("Decision summaries must match the retained Risk Signal")
+        expected_gates = TriggerPolicy._evaluate_gates(
+            signal, self.portfolio_materiality, self.policy_config, self.as_of
+        )
+        if self.gates != expected_gates:
+            raise ValueError(
+                "Decision requires complete ordered gates matching input results/reasons"
+            )
+        automatic = all(gate.passed for gate in expected_gates)
+        if self.automatic_trigger != automatic:
+            raise ValueError("Automatic status must match the complete gate evidence")
+        if self.triggered != (automatic or self.manual_override is not None):
+            raise ValueError(
+                "Combined status must match automatic eligibility or explicit override"
+            )
+        return self
+
 
 class _PolicyContext(DomainModel):
     config: PolicyConfig
@@ -105,6 +142,34 @@ class TriggerPolicy:
                 manual_override.model_dump(mode="python")
             )
         config = self._context.config
+        gates = self._evaluate_gates(signal, loss, config, self._context.as_of)
+        automatic = all(g.passed for g in gates)
+        return TriggerDecision(
+            risk_signal=signal,
+            signal_id=signal.signal_id,
+            source_item_id=signal.source_item_id,
+            signal_versions=signal.versions,
+            as_of=self._context.as_of,
+            policy_config=config,
+            impact_score=signal.impact.impact_score,
+            confidence=signal.confidence,
+            confidence_target=signal.confidence_target,
+            portfolio_materiality=loss,
+            action_priority=signal.action_priority,
+            gates=gates,
+            automatic_trigger=automatic,
+            manual_override=manual_override,
+            triggered=automatic or manual_override is not None,
+        )
+
+    @staticmethod
+    def _evaluate_gates(
+        signal: RiskSignal,
+        loss: PortfolioMateriality,
+        config: PolicyConfig,
+        as_of: datetime,
+    ) -> tuple[TriggerGate, ...]:
+        """One gate definition shared by creation and restored-record validation."""
         selected = config.selected
         known_entity = (
             not signal.entity.ambiguous
@@ -126,7 +191,7 @@ class TriggerPolicy:
         )
         gate(
             "policy_chronology",
-            selected is not None and selected.frozen_at <= self._context.as_of,
+            selected is not None and selected.frozen_at <= as_of,
             "Selected policy was frozen by the explicit replay cutoff",
             "Selected policy is absent or was frozen after the replay cutoff",
         )
@@ -178,24 +243,7 @@ class TriggerPolicy:
             "Absolute Portfolio Materiality meets the inclusive floor within declared tolerance",
             "Economic floor is unselected or absolute loss is below floor minus tolerance",
         )
-        automatic = all(g.passed for g in gates)
-        return TriggerDecision(
-            risk_signal=signal,
-            signal_id=signal.signal_id,
-            source_item_id=signal.source_item_id,
-            signal_versions=signal.versions,
-            as_of=self._context.as_of,
-            policy_config=config,
-            impact_score=signal.impact.impact_score,
-            confidence=signal.confidence,
-            confidence_target=signal.confidence_target,
-            portfolio_materiality=loss,
-            action_priority=signal.action_priority,
-            gates=tuple(gates),
-            automatic_trigger=automatic,
-            manual_override=manual_override,
-            triggered=automatic or manual_override is not None,
-        )
+        return tuple(gates)
 
 
 __all__ = ["ManualOverride", "TriggerDecision", "TriggerGate", "TriggerPolicy"]
