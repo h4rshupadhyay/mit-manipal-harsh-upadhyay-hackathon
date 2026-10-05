@@ -26,6 +26,10 @@
 
 ## Commit Discipline
 
+Follow the [development workflow](../../development-workflow.md) for branch
+handling, review, authorized per-task pushes, and resumable handoffs. The task
+boundaries below govern commit scope; they do not require a branch per task.
+
 - One task below equals one reviewable commit: one coherent behavior or interface plus its tests.
 - Complete the red-green cycle locally before committing. Every commit must leave all existing tests green.
 - Keep formatting and documentation changes with the behavior that requires them; otherwise give them their own explicitly requested task.

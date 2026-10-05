@@ -31,6 +31,7 @@ The analyst interface will use FastAPI for machine-readable output and Streamlit
 
 - [Approved system design](docs/superpowers/specs/2026-10-04-financial-risk-engine-design.md)
 - [Implementation plan](docs/superpowers/plans/2026-10-04-financial-risk-engine.md)
+- [Development, commit, push, and resume workflow](docs/development-workflow.md)
 - The final high-resolution diagram will be committed at `docs/architecture.png`.
 
 ## 3. Dataset Used

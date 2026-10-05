@@ -14,6 +14,10 @@
 
 ## Engineering workflow
 
+- Before implementation, committing, pushing, or resuming, follow
+  `docs/development-workflow.md` for checkpoint, branch, review, publication,
+  and handoff rules. Push each reviewed task checkpoint only to an authorized
+  destination; do not infer permission to rename branches or rewrite history.
 - Use test-driven development: add a focused failing test, verify the expected
   failure, implement the smallest passing change, then run the full applicable
   suite.
