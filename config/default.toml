@@ -25,3 +25,45 @@ max_time_delta_hours = 24
 
 [policy]
 impact_threshold = 8
+
+# Development candidates only: no chronological selection has been performed.
+[analogues]
+version = "analogues-bootstrap-v1"
+validation_status = "bootstrap_unvalidated"
+frozen_at = 2025-01-01T00:00:00Z
+# No fit time or validation evidence exists for this unfitted bootstrap candidate.
+distance = "weighted_normalized_l1"
+tie_break = "event_id_ascending"
+nearest_neighbors = 10
+minimum_support = 3
+
+[[analogues.scale_distances]]
+name = "size"
+unit = "USD"
+normalizer = 1000000.0
+weight = 1.0
+
+[[analogues.levels]]
+name = "exact"
+fields = ["event_class", "subtype", "region", "sector", "exposure_type"]
+scales = ["size"]
+[[analogues.levels]]
+name = "class_region_sector_exposure"
+fields = ["event_class", "region", "sector", "exposure_type"]
+scales = ["size"]
+[[analogues.levels]]
+name = "class_region_exposure"
+fields = ["event_class", "region", "exposure_type"]
+scales = ["size"]
+[[analogues.levels]]
+name = "class_exposure"
+fields = ["event_class", "exposure_type"]
+scales = ["size"]
+[[analogues.levels]]
+name = "class"
+fields = ["event_class"]
+scales = []
+[[analogues.levels]]
+name = "global"
+fields = []
+scales = []

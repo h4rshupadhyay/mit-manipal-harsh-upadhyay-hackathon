@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from risk_engine.config import AppConfig, ClusteringConfig
+from risk_engine.config import AnalogueConfig, AppConfig, ClusteringConfig
 from risk_engine.domain import EventClass
 
 EVENT_CLASSES = [event_class.value for event_class in EventClass]
@@ -99,3 +99,66 @@ def test_clustering_configuration_rejects_invalid_bounds(
 ) -> None:
     with pytest.raises(ValidationError):
         ClusteringConfig.model_validate(values)
+
+
+def analogue_payload() -> dict:
+    config = AppConfig.load(Path("config/default.toml")).analogues
+    assert config is not None
+    return config.model_dump()
+
+
+def test_analogue_default_is_explicitly_unvalidated_and_older_config_remains_loadable(
+    tmp_path: Path,
+) -> None:
+    matching = AppConfig.load(Path("config/default.toml")).analogues
+    assert matching is not None
+    assert matching.validation_status == "bootstrap_unvalidated"
+    assert matching.fit_as_of is None
+    assert matching.validation_evidence is None
+    assert AppConfig.load(write_config(tmp_path / "older.toml")).analogues is None
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "unknown_top_level",
+        "unknown_matching_field",
+        "k_below_support",
+        "zero_normalizer",
+        "nan_weight",
+        "missing_version",
+        "validated_without_fit",
+        "validated_without_evidence",
+        "non_global_end",
+        "tightening_backoff",
+        "duplicate_constraints",
+    ],
+)
+def test_analogue_config_rejects_inconsistent_frozen_rules(damage: str) -> None:
+    payload = analogue_payload()
+    if damage == "unknown_top_level":
+        payload["unexpected"] = True
+    elif damage == "unknown_matching_field":
+        payload["levels"][0]["fields"] = ("sentiment",)
+    elif damage == "k_below_support":
+        payload["nearest_neighbors"] = 1
+    elif damage == "zero_normalizer":
+        payload["scale_distances"][0]["normalizer"] = 0
+    elif damage == "nan_weight":
+        payload["scale_distances"][0]["weight"] = float("nan")
+    elif damage == "missing_version":
+        del payload["version"]
+    elif damage == "validated_without_fit":
+        payload.update(validation_status="chronologically_validated", validation_evidence="proof")
+    elif damage == "validated_without_evidence":
+        payload.update(
+            validation_status="chronologically_validated", fit_as_of=payload["frozen_at"]
+        )
+    elif damage == "non_global_end":
+        payload["levels"][-1]["fields"] = ("event_class",)
+    elif damage == "tightening_backoff":
+        payload["levels"][2]["fields"] = (*payload["levels"][2]["fields"], "subtype")
+    elif damage == "duplicate_constraints":
+        payload["levels"][1]["fields"] = payload["levels"][0]["fields"]
+    with pytest.raises(ValidationError):
+        AnalogueConfig.model_validate(payload)
