@@ -4,7 +4,7 @@ import hashlib
 import json
 from decimal import Decimal
 from enum import Enum
-from typing import Annotated
+from typing import Annotated, Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -19,6 +19,7 @@ from risk_engine.domain import (
     Portfolio,
     Position,
     ShockType,
+    ShockUnit,
 )
 from risk_engine.stress.interfaces import FACTOR_REGISTRY
 
@@ -40,6 +41,7 @@ class ReferenceReturnRow(DomainModel):
     """Simultaneous dimensionless proxy returns observed at one aware instant."""
 
     observed_at: AwareDatetime
+    unit: Literal[ShockUnit.DECIMAL]
     factor_returns: dict[NonEmptyString, float]
 
 

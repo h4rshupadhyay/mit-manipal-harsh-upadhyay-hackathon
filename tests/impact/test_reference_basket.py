@@ -1,5 +1,6 @@
 """Frozen Reference Basket construction over synthetic factor returns."""
 
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -65,6 +66,7 @@ def rows() -> tuple[ReferenceReturnRow, ...]:
     return tuple(
         ReferenceReturnRow(
             observed_at=CALIBRATION - timedelta(days=3 - i),
+            unit=ShockUnit.DECIMAL,
             factor_returns={"EQUITY-US": us, "EQUITY-INDIA": india},
         )
         for i, (us, india) in enumerate(((-0.01, -0.02), (0.0, 0.0), (0.01, 0.02)))
@@ -106,6 +108,7 @@ def test_equal_risk_contribution_equalizes_correlated_proxy_risks() -> None:
     observations = tuple(
         ReferenceReturnRow(
             observed_at=CALIBRATION - timedelta(days=4 - i),
+            unit=ShockUnit.DECIMAL,
             factor_returns={
                 "EQUITY-US": a,
                 "EQUITY-INDIA": b,
@@ -123,6 +126,33 @@ def test_equal_risk_contribution_equalizes_correlated_proxy_risks() -> None:
     contributions = [weights[i] * marginal[i] for i in range(3)]
     assert max(contributions) - min(contributions) < 1e-5
     assert all(weight > 0 for weight in weights)
+
+
+def test_reference_returns_require_explicit_decimal_unit() -> None:
+    payload = {
+        "observed_at": CALIBRATION,
+        "factor_returns": {"EQUITY-US": 0.01, "EQUITY-INDIA": 0.02},
+    }
+    with pytest.raises(ValueError):
+        ReferenceReturnRow.model_validate(payload)
+
+    with pytest.raises(ValueError):
+        ReferenceReturnRow.model_validate({**payload, "unit": ShockUnit.PERCENT})
+
+
+def test_decimal_unit_is_frozen_into_return_rows_hash() -> None:
+    builder = ReferenceBasketBuilder()
+    candidate = spec(BasketConstruction.EQUAL_NOTIONAL)
+    baseline = builder.build(rows(), candidate)
+    changed_unit = list(rows())
+    changed_unit[0] = changed_unit[0].model_copy(update={"unit": "percent"})
+    with pytest.raises(ValueError):
+        builder.build(tuple(changed_unit), candidate)
+    rows_json = [row.model_dump(mode="json") for row in rows()]
+    row_bytes = json.dumps(rows_json, sort_keys=True, separators=(",", ":")).encode()
+    assert json.loads(baseline.version)["return_rows_sha256"] == hashlib.sha256(
+        row_bytes
+    ).hexdigest()
 
 
 def test_version_fingerprint_changes_with_constituent_or_return_data() -> None:
