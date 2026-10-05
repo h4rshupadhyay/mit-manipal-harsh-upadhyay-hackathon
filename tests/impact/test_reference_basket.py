@@ -3,7 +3,7 @@
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_UP, Decimal, Inexact, Rounded, localcontext
 
 import pytest
 
@@ -273,3 +273,39 @@ def test_equal_notional_preserves_zero_variance_proxy_without_dividing_by_volati
     basket = ReferenceBasketBuilder().build(observations, spec(BasketConstruction.EQUAL_NOTIONAL))
     assert [p.notional for p in basket.positions] == [Decimal("500"), Decimal("500")]
     assert json.loads(basket.version)["covariance"][0][0] == 0
+
+
+@pytest.mark.parametrize("construction", list(BasketConstruction))
+@pytest.mark.parametrize("precision", [6, 50])
+def test_build_freezes_allocation_arithmetic_across_caller_contexts(construction, precision):
+    candidate = spec(construction).model_copy(
+        update={"total_notional": Decimal("100000000000000.01")}
+    )
+    # Include currency sensitivities, so scale arithmetic is tested with allocations.
+    original = candidate.constituents[0]
+    derivative = original.position.model_copy(
+        update={
+            "asset_type": AssetType.DERIVATIVE,
+            "factor_exposures": {"delta:EQUITY-US": 13.7},
+        }
+    )
+    candidate = candidate.model_copy(
+        update={
+            "constituents": (
+                original.model_copy(update={"position": derivative}),
+                candidate.constituents[1],
+            )
+        }
+    )
+    ordinary = ReferenceBasketBuilder().build(rows(), candidate)
+    with localcontext() as context:
+        context.prec = precision
+        context.rounding = ROUND_UP
+        context.Emax = 9
+        context.Emin = -9
+        context.capitals = 0
+        context.clamp = 1
+        context.traps[Inexact] = True
+        context.traps[Rounded] = True
+        hostile = ReferenceBasketBuilder().build(rows(), candidate)
+    assert hostile.model_dump_json() == ordinary.model_dump_json()

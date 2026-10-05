@@ -2,7 +2,15 @@
 
 import hashlib
 import json
-from decimal import Decimal
+from decimal import (
+    ROUND_HALF_EVEN,
+    Context,
+    Decimal,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+    localcontext,
+)
 from enum import Enum
 from typing import Annotated, Literal
 
@@ -22,6 +30,24 @@ from risk_engine.domain import (
     ShockUnit,
 )
 from risk_engine.stress.interfaces import FACTOR_REGISTRY
+
+ALLOCATION_ARITHMETIC_VERSION = "reference-allocation-decimal28-half-even-v1"
+
+
+def reference_allocation_context(version: str) -> Context:
+    """Fresh full arithmetic contract shared by basket construction and verification."""
+    if version != ALLOCATION_ARITHMETIC_VERSION:
+        raise ValueError("unsupported Reference Basket allocation arithmetic version")
+    return Context(
+        prec=28,
+        rounding=ROUND_HALF_EVEN,
+        Emin=-999999,
+        Emax=999999,
+        capitals=1,
+        clamp=0,
+        flags=[],
+        traps=[InvalidOperation, DivisionByZero, Overflow],
+    )
 
 
 class BasketConstruction(str, Enum):
@@ -83,6 +109,12 @@ class ReferenceBasketBuilder:
     def build(
         self, returns: tuple[ReferenceReturnRow, ...], spec: ReferenceBasketSpec
     ) -> Portfolio:
+        with localcontext(reference_allocation_context(ALLOCATION_ARITHMETIC_VERSION)):
+            return self._build(returns, spec)
+
+    def _build(
+        self, returns: tuple[ReferenceReturnRow, ...], spec: ReferenceBasketSpec
+    ) -> Portfolio:
         spec = ReferenceBasketSpec.model_validate(spec.model_dump())
         rows = tuple(ReferenceReturnRow.model_validate(row.model_dump()) for row in returns)
         if len(rows) != spec.lookback_observations:
@@ -123,6 +155,7 @@ class ReferenceBasketBuilder:
         ).encode()
         manifest = {
             "basket_version": spec.basket_version,
+            "allocation_arithmetic_version": ALLOCATION_ARITHMETIC_VERSION,
             "construction": spec.construction.value,
             "factor_proxy_ids": proxies,
             "constituent_ids": [c.position.position_id for c in spec.constituents],
