@@ -15,6 +15,7 @@ import json
 import math
 from collections import Counter, defaultdict
 from datetime import date, datetime
+from enum import Enum
 from pathlib import Path
 from typing import Literal
 
@@ -23,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from risk_engine.calibration.event_study import MeasurementDimension
 from risk_engine.domain import EventClass, ShockUnit
 
-VERSION = "calibration-dataset-v1"
+VERSION = "calibration-dataset-v2"
 EVENT_INPUT_FIELDS = (
     "event_id", "event_date", "date_precision", "event_class", "region", "description",
     "source_reference", "source_terms", "permission", "evidence_kind", "source_version",
@@ -32,10 +33,49 @@ FACTOR_INPUT_FIELDS = (
     "event_id", "factor_id", "window_start", "window_end", "value", "unit",
     "measurement_dimension", "observed_at", "provider", "snapshot_id", "series_version",
     "source_terms", "permission", "evidence_kind",
+    "asset_role", "event_clock_id", "event_session_date", "event_study_spec_version",
+    "window_start_session", "window_end_session",
 )
 EVENT_OUTPUT_FIELDS = (*EVENT_INPUT_FIELDS, "market_support", "missing_support_reason")
 FACTOR_OUTPUT_FIELDS = FACTOR_INPUT_FIELDS
-REQUIRED_DIMENSIONS = frozenset(MeasurementDimension)
+
+
+class AssetRole(str, Enum):
+    """The six distinct market roles required by a historical Joint Shock Vector."""
+
+    EQUITY = "equity"
+    RATE = "rate"
+    SPREAD = "spread"
+    FX = "fx"
+    COMMODITY = "commodity"
+    VOLATILITY = "volatility"
+
+
+_DIMENSION_UNITS = {
+    MeasurementDimension.RETURN: frozenset({ShockUnit.DECIMAL, ShockUnit.PERCENT}),
+    MeasurementDimension.YIELD: frozenset(
+        {ShockUnit.DECIMAL, ShockUnit.PERCENT, ShockUnit.BASIS_POINT}
+    ),
+    MeasurementDimension.SPREAD: frozenset(
+        {ShockUnit.DECIMAL, ShockUnit.PERCENT, ShockUnit.BASIS_POINT}
+    ),
+    MeasurementDimension.VOLATILITY: frozenset({ShockUnit.VOLATILITY_POINT}),
+    MeasurementDimension.PRICE: frozenset(
+        {ShockUnit.DECIMAL, ShockUnit.PERCENT, ShockUnit.ABSOLUTE, ShockUnit.INDEX_POINT}
+    ),
+    MeasurementDimension.CURRENCY: frozenset(
+        {ShockUnit.DECIMAL, ShockUnit.PERCENT, ShockUnit.ABSOLUTE, ShockUnit.CURRENCY}
+    ),
+}
+_ROLE_DIMENSIONS = {
+    AssetRole.EQUITY: frozenset({MeasurementDimension.RETURN}),
+    AssetRole.RATE: frozenset({MeasurementDimension.YIELD}),
+    AssetRole.SPREAD: frozenset({MeasurementDimension.SPREAD}),
+    AssetRole.FX: frozenset({MeasurementDimension.RETURN, MeasurementDimension.CURRENCY}),
+    AssetRole.COMMODITY: frozenset({MeasurementDimension.RETURN, MeasurementDimension.PRICE}),
+    AssetRole.VOLATILITY: frozenset({MeasurementDimension.VOLATILITY}),
+}
+REQUIRED_ROLES = frozenset(AssetRole)
 
 
 class EventInput(BaseModel):
@@ -90,6 +130,12 @@ class FactorInput(BaseModel):
     source_terms: str = Field(min_length=1)
     permission: Literal["derived_export", "restricted"]
     evidence_kind: Literal["observed", "synthetic"]
+    asset_role: AssetRole
+    event_clock_id: str = Field(min_length=1)
+    event_session_date: date
+    event_study_spec_version: str = Field(min_length=1)
+    window_start_session: date
+    window_end_session: date
 
     @field_validator("value")
     @classmethod
@@ -104,6 +150,14 @@ class FactorInput(BaseModel):
             raise ValueError("factor window must include event session")
         if self.observed_at.utcoffset() is None:
             raise ValueError("observed_at must include timezone")
+        if self.unit not in _DIMENSION_UNITS[self.measurement_dimension]:
+            raise ValueError("unsupported unit for measurement dimension")
+        if self.measurement_dimension not in _ROLE_DIMENSIONS[self.asset_role]:
+            raise ValueError("measurement dimension does not match asset role")
+        if not (
+            self.window_start_session <= self.event_session_date <= self.window_end_session
+        ):
+            raise ValueError("registered window sessions must include event session")
         return self
 
 
@@ -132,12 +186,23 @@ def _sha256(payload: bytes) -> str:
 
 
 def _empirical_support(shocks: list[FactorInput]) -> bool:
-    """Require one complete contemporaneous observed vector for an event."""
-    dimensions: dict[tuple[int, int], set[MeasurementDimension]] = defaultdict(set)
+    """Require all roles under one registered event clock, spec, and timed window."""
+    vectors: dict[tuple[str, date, str, int, int, date, date], set[AssetRole]] = (
+        defaultdict(set)
+    )
     for shock in shocks:
         if shock.evidence_kind == "observed":
-            dimensions[(shock.window_start, shock.window_end)].add(shock.measurement_dimension)
-    return any(found >= REQUIRED_DIMENSIONS for found in dimensions.values())
+            identity = (
+                shock.event_clock_id,
+                shock.event_session_date,
+                shock.event_study_spec_version,
+                shock.window_start,
+                shock.window_end,
+                shock.window_start_session,
+                shock.window_end_session,
+            )
+            vectors[identity].add(shock.asset_role)
+    return any(roles >= REQUIRED_ROLES for roles in vectors.values())
 
 
 def build_dataset(
@@ -200,13 +265,19 @@ def build_dataset(
     missing_reasons: Counter[str] = Counter()
     for event in permitted_events:
         shocks = by_event[event.event_id]
-        supported = event.evidence_kind != "synthetic" and _empirical_support(shocks)
+        supported = (
+            event.evidence_kind != "synthetic"
+            and event.date_precision == "day"
+            and _empirical_support(shocks)
+        )
         if supported:
             reason = ""
         elif not shocks:
             reason = "no_local_factor_shocks"
         elif all(shock.evidence_kind == "synthetic" for shock in shocks):
             reason = "synthetic_only"
+        elif event.date_precision != "day":
+            reason = "imprecise_event_date"
         else:
             reason = "incomplete_joint_vector"
         if reason:

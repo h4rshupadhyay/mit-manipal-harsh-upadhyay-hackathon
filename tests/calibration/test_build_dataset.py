@@ -68,6 +68,7 @@ def test_identical_inputs_produce_identical_bytes_and_hash_actual_local_input(
         name: (second / name).read_bytes() for name in names
     }
     manifest = json.loads((first / "manifest.json").read_text())
+    assert manifest["schema_version"] == "calibration-dataset-v2"
     assert manifest["sources"] == [
         {"role": "event_metadata", "sha256": hashlib.sha256(FIXTURE.read_bytes()).hexdigest()}
     ]
@@ -102,6 +103,9 @@ def test_synthetic_factor_shocks_do_not_count_as_empirical_support(tmp_path: Pat
         "provider": "synthetic-test", "snapshot_id": "synthetic-snapshot",
         "series_version": "test-v1", "source_terms": "synthetic test fixture",
         "permission": "derived_export", "evidence_kind": "synthetic",
+        "asset_role": "rate", "event_clock_id": "clock-rbi-v1",
+        "event_session_date": "2022-09-30", "event_study_spec_version": "study-v1",
+        "window_start_session": "2022-09-30", "window_end_session": "2022-10-03",
     }])
 
     build_dataset(FIXTURE, tmp_path / "out", factor_shocks_path=factor)
@@ -127,6 +131,9 @@ def test_restricted_factor_shock_is_not_exported(tmp_path: Path) -> None:
         "provider": "local", "snapshot_id": "local-1", "series_version": "v1",
         "source_terms": "local source; derived export restricted", "permission": "restricted",
         "evidence_kind": "observed",
+        "asset_role": "rate", "event_clock_id": "clock-rbi-v1",
+        "event_session_date": "2022-09-30", "event_study_spec_version": "study-v1",
+        "window_start_session": "2022-09-30", "window_end_session": "2022-10-03",
     }])
 
     build_dataset(FIXTURE, tmp_path / "out", factor_shocks_path=factor)
@@ -145,3 +152,102 @@ def test_incomplete_source_metadata_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="source_terms"):
         build_dataset(source, tmp_path / "out")
+
+
+def _complete_factor_rows() -> list[dict[str, str]]:
+    """A six-role, one-window test vector, with distinct factor source identities."""
+    cases = (
+        ("equity", "NIFTY", "return", "decimal", "-0.03"),
+        ("rate", "INR_10Y", "yield", "basis_point", "12.5"),
+        ("spread", "INDIA_IG", "spread", "basis_point", "35"),
+        ("fx", "USD_INR", "return", "decimal", "0.02"),
+        ("commodity", "BRENT", "return", "percent", "-4"),
+        ("volatility", "INDIA_VIX", "volatility", "volatility_point", "2"),
+    )
+    return [
+        {
+            "event_id": "rbi-repo-2022-09-30", "factor_id": factor_id,
+            "window_start": "0", "window_end": "1", "value": value, "unit": unit,
+            "measurement_dimension": dimension, "observed_at": "2022-10-03T16:00:00+05:30",
+            "provider": f"provider-{role}", "snapshot_id": f"snapshot-{role}",
+            "series_version": f"version-{role}", "source_terms": "derived export allowed",
+            "permission": "derived_export", "evidence_kind": "observed", "asset_role": role,
+            "event_clock_id": "clock-rbi-v1", "event_session_date": "2022-09-30",
+            "event_study_spec_version": "study-v1", "window_start_session": "2022-09-30",
+            "window_end_session": "2022-10-03",
+        }
+        for role, factor_id, dimension, unit, value in cases
+    ]
+
+
+def test_complete_six_role_vector_with_common_clock_and_spec_is_empirical(tmp_path: Path) -> None:
+    """Catches rejecting a genuine joint window because providers differ by factor."""
+    factor = tmp_path / "factors.csv"
+    _write_rows(factor, _complete_factor_rows())
+
+    build_dataset(FIXTURE, tmp_path / "out", factor_shocks_path=factor)
+
+    events = {row["event_id"]: row for row in _rows(tmp_path / "out" / "events.csv")}
+    assert events["rbi-repo-2022-09-30"]["market_support"] == "empirical"
+    assert events["rbi-repo-2022-09-30"]["missing_support_reason"] == ""
+    assert len(_rows(tmp_path / "out" / "factor_shocks.csv")) == 6
+    coverage = json.loads((tmp_path / "out" / "coverage.json").read_text())
+    assert coverage["empirical_supported_events"] == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("asset_role", "fx"),
+        ("event_clock_id", "different-clock"),
+        ("event_study_spec_version", "different-spec"),
+        ("event_session_date", "2022-10-03"),
+        ("window_end_session", "2022-10-04"),
+    ],
+)
+def test_mixed_role_or_event_study_identity_is_not_empirical(
+    tmp_path: Path, field: str, replacement: str,
+) -> None:
+    """Catches splicing six unrelated rows into one historical joint vector."""
+    rows = _complete_factor_rows()
+    rows[4 if field == "asset_role" else -1][field] = replacement
+    factor = tmp_path / "factors.csv"
+    _write_rows(factor, rows)
+
+    build_dataset(FIXTURE, tmp_path / "out", factor_shocks_path=factor)
+
+    events = {row["event_id"]: row for row in _rows(tmp_path / "out" / "events.csv")}
+    assert events["rbi-repo-2022-09-30"]["market_support"] == "missing"
+    assert events["rbi-repo-2022-09-30"]["missing_support_reason"] == (
+        "incomplete_joint_vector"
+    )
+
+
+def test_incompatible_dimension_unit_is_rejected(tmp_path: Path) -> None:
+    """Catches exporting a spread movement measured in volatility points."""
+    rows = _complete_factor_rows()
+    rows[2]["unit"] = "volatility_point"
+    factor = tmp_path / "factors.csv"
+    _write_rows(factor, rows)
+
+    with pytest.raises(ValueError, match="unsupported unit for measurement dimension"):
+        build_dataset(FIXTURE, tmp_path / "out", factor_shocks_path=factor)
+
+
+def test_month_precision_event_cannot_claim_empirical_reaction(tmp_path: Path) -> None:
+    """Catches treating IL&FS month-only chronology as an exact event-study clock."""
+    rows = _complete_factor_rows()
+    for row in rows:
+        row["event_id"] = "ilfs-takeover-2018-10"
+        row["event_session_date"] = "2018-10-01"
+        row["window_start_session"] = "2018-10-01"
+        row["window_end_session"] = "2018-10-02"
+        row["observed_at"] = "2018-10-02T16:00:00+05:30"
+    factor = tmp_path / "factors.csv"
+    _write_rows(factor, rows)
+
+    build_dataset(FIXTURE, tmp_path / "out", factor_shocks_path=factor)
+
+    events = {row["event_id"]: row for row in _rows(tmp_path / "out" / "events.csv")}
+    assert events["ilfs-takeover-2018-10"]["market_support"] == "missing"
+    assert events["ilfs-takeover-2018-10"]["missing_support_reason"] == "imprecise_event_date"
