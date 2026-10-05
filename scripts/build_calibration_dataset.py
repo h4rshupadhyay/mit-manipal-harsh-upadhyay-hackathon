@@ -154,10 +154,13 @@ class FactorInput(BaseModel):
             raise ValueError("unsupported unit for measurement dimension")
         if self.measurement_dimension not in _ROLE_DIMENSIONS[self.asset_role]:
             raise ValueError("measurement dimension does not match asset role")
-        if not (
-            self.window_start_session <= self.event_session_date <= self.window_end_session
+        if (
+            (self.window_start == 0 and self.window_start_session != self.event_session_date)
+            or (self.window_start < 0 and self.window_start_session >= self.event_session_date)
+            or (self.window_end == 0 and self.window_end_session != self.event_session_date)
+            or (self.window_end > 0 and self.window_end_session <= self.event_session_date)
         ):
-            raise ValueError("registered window sessions must include event session")
+            raise ValueError("window session dates disagree with offsets")
         return self
 
 

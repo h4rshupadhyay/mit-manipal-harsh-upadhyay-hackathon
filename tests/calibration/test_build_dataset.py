@@ -211,6 +211,10 @@ def test_mixed_role_or_event_study_identity_is_not_empirical(
     """Catches splicing six unrelated rows into one historical joint vector."""
     rows = _complete_factor_rows()
     rows[4 if field == "asset_role" else -1][field] = replacement
+    if field == "event_session_date":
+        rows[-1]["window_start_session"] = "2022-10-03"
+        rows[-1]["window_end_session"] = "2022-10-04"
+        rows[-1]["observed_at"] = "2022-10-04T16:00:00+05:30"
     factor = tmp_path / "factors.csv"
     _write_rows(factor, rows)
 
@@ -251,3 +255,44 @@ def test_month_precision_event_cannot_claim_empirical_reaction(tmp_path: Path) -
     events = {row["event_id"]: row for row in _rows(tmp_path / "out" / "events.csv")}
     assert events["ilfs-takeover-2018-10"]["market_support"] == "missing"
     assert events["ilfs-takeover-2018-10"]["missing_support_reason"] == "imprecise_event_date"
+
+
+def test_zero_window_with_broader_sessions_cannot_claim_empirical_support(tmp_path: Path) -> None:
+    """Catches six same-window rows claiming support with dishonest session dates."""
+    rows = _complete_factor_rows()
+    for row in rows:
+        row["window_end"] = "0"
+        row["window_start_session"] = "2022-09-29"
+        row["window_end_session"] = "2022-10-03"
+    factor = tmp_path / "factors.csv"
+    _write_rows(factor, rows)
+
+    with pytest.raises(ValueError, match="window session dates disagree with offsets"):
+        build_dataset(FIXTURE, tmp_path / "out", factor_shocks_path=factor)
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "start_session", "end_session"),
+    [
+        ("0", "1", "2022-09-29", "2022-10-03"),
+        ("-1", "0", "2022-09-29", "2022-10-03"),
+        ("-1", "1", "2022-09-30", "2022-10-03"),
+        ("0", "1", "2022-09-30", "2022-09-30"),
+    ],
+)
+def test_window_session_dates_must_follow_offset_direction(
+    tmp_path: Path, start: str, end: str, start_session: str, end_session: str,
+) -> None:
+    """Catches zero offsets that drift and nonzero offsets with no session separation."""
+    rows = _complete_factor_rows()[:1]
+    rows[0].update({
+        "window_start": start,
+        "window_end": end,
+        "window_start_session": start_session,
+        "window_end_session": end_session,
+    })
+    factor = tmp_path / "factors.csv"
+    _write_rows(factor, rows)
+
+    with pytest.raises(ValueError, match="window session dates disagree with offsets"):
+        build_dataset(FIXTURE, tmp_path / "out", factor_shocks_path=factor)
