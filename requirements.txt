@@ -1,4 +1,5 @@
 duckdb==1.2.2
+fastapi==0.115.12
 httpx==0.28.1
 hypothesis==6.168.3
 mypy==1.15.0
@@ -12,3 +13,4 @@ scipy==1.16.3
 statsmodels==0.15.0
 torch==2.14.1
 transformers==5.18.0
+uvicorn==0.34.0

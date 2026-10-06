@@ -12,6 +12,7 @@ license = { file = "LICENSE" }
 authors = [{ name = "Harsh Upadhyay" }]
 dependencies = [
   "duckdb==1.2.2",
+  "fastapi==0.115.12",
   "httpx==0.28.1",
   "numpy==2.5.3",
   "pydantic==2.10.6",
@@ -21,6 +22,7 @@ dependencies = [
   "statsmodels==0.15.0",
   "torch==2.14.1",
   "transformers==5.18.0",
+  "uvicorn==0.34.0",
 ]
 
 [project.optional-dependencies]
