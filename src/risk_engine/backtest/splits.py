@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -59,8 +59,13 @@ class FoldGroup(_SplitRecord):
         return self
 
 
-def _group_key(group: FoldGroup) -> tuple[object, str]:
-    return group.event_time, group.cluster_id
+def _utc_instant(event_time: datetime) -> datetime:
+    utc = timezone.utc  # noqa: UP017 -- inherited verification runtime is Python 3.10
+    return event_time.astimezone(utc)
+
+
+def _group_key(group: FoldGroup) -> tuple[datetime, str]:
+    return _utc_instant(group.event_time), group.cluster_id
 
 
 def _validate_partitions(
@@ -135,9 +140,9 @@ def _eligible_count(
     evaluation_start: int,
     embargo: timedelta,
 ) -> int:
-    first_evaluation_time = groups[evaluation_start].event_time
+    first_evaluation_time = _utc_instant(groups[evaluation_start].event_time)
     return sum(
-        group.event_time + embargo <= first_evaluation_time
+        _utc_instant(group.event_time) + embargo <= first_evaluation_time
         for group in groups[:evaluation_start]
     )
 
@@ -191,17 +196,15 @@ def _canonical_groups(clusters: Sequence[StoryCluster]) -> tuple[FoldGroup, ...]
     ]
     if len(source_item_ids) != len(set(source_item_ids)):
         raise ValueError("Source Item IDs must be unique across Story Clusters")
-    return tuple(
+    groups = (
         FoldGroup(
             cluster_id=cluster.cluster_id,
             event_time=cluster.event_time,
             source_item_ids=tuple(sorted(cluster.source_item_ids)),
         )
-        for cluster in sorted(
-            validated_clusters,
-            key=lambda cluster: (cluster.event_time, cluster.cluster_id),
-        )
+        for cluster in validated_clusters
     )
+    return tuple(sorted(groups, key=_group_key))
 
 
 def nested_chronological_splits(
