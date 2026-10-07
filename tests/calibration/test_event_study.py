@@ -11,6 +11,7 @@ from risk_engine.calibration.event_study import (
     EventStudyEvent,
     EventStudySpec,
     EventWindow,
+    MeasurementDimension,
     ReturnObservation,
     compute_event_reaction,
 )
@@ -107,6 +108,93 @@ def test_missing_estimation_data_uses_declared_market_adjusted_fallback():
     assert result.beta == 1.0
     assert result.windows[0].car == pytest.approx(0.022)
     assert result.estimation_factor_observations == ()
+
+
+@pytest.mark.parametrize(
+    ("dimension", "unit"),
+    [
+        (MeasurementDimension.RETURN, ShockUnit.VOLATILITY_POINT),
+        (MeasurementDimension.YIELD, ShockUnit.CURRENCY),
+    ],
+)
+def test_observation_rejects_incompatible_measurement_unit(dimension, unit):
+    _, factor, _, _ = inputs()
+
+    with pytest.raises(ValueError, match="unit.*measurement dimension"):
+        ReturnObservation(
+            **(factor[0].model_dump() | {"measurement_dimension": dimension, "unit": unit})
+        )
+
+
+@pytest.mark.parametrize(
+    ("dimension", "unit"),
+    [
+        (MeasurementDimension.RETURN, ShockUnit.VOLATILITY_POINT),
+        (MeasurementDimension.YIELD, ShockUnit.CURRENCY),
+    ],
+)
+@pytest.mark.parametrize("invalid_series", ["factor", "benchmark", "both"])
+def test_computation_rejects_copied_incompatible_measurement_unit(
+    dimension, unit, invalid_series
+):
+    event, factor, benchmark, spec = inputs()
+    update = {"measurement_dimension": dimension, "unit": unit}
+    if invalid_series in {"factor", "both"}:
+        factor = tuple(row.model_copy(update=update) for row in factor)
+    if invalid_series in {"benchmark", "both"}:
+        benchmark = tuple(row.model_copy(update=update) for row in benchmark)
+
+    with pytest.raises(ValueError, match="unit.*measurement dimension"):
+        compute_event_reaction(event, factor, benchmark, spec)
+
+
+def test_fallback_rejects_matching_copied_incompatible_measurement_units():
+    event, factor, benchmark, spec = inputs()
+    update = {"unit": ShockUnit.VOLATILITY_POINT}
+    factor = tuple(row.model_copy(update=update) for row in factor[4:])
+    benchmark = tuple(row.model_copy(update=update) for row in benchmark[4:])
+
+    with pytest.raises(ValueError, match="unit.*measurement dimension"):
+        compute_event_reaction(event, factor, benchmark, spec)
+
+
+@pytest.mark.parametrize(
+    ("dimension", "unit", "scale"),
+    [
+        (MeasurementDimension.RETURN, ShockUnit.PERCENT, 100),
+        (MeasurementDimension.YIELD, ShockUnit.BASIS_POINT, 10_000),
+        (MeasurementDimension.VOLATILITY, ShockUnit.VOLATILITY_POINT, 1),
+    ],
+)
+@pytest.mark.parametrize(
+    ("has_estimation", "method", "event_car"),
+    [(True, "market_model", 0.01), (False, "market_adjusted", 0.022)],
+)
+def test_compatible_native_units_preserve_reactions(
+    dimension, unit, scale, has_estimation, method, event_car
+):
+    event, factor, benchmark, spec = inputs()
+    if not has_estimation:
+        factor, benchmark = factor[4:], benchmark[4:]
+    factor, benchmark = (
+        tuple(
+            ReturnObservation.model_validate(
+                row.model_dump()
+                | {"measurement_dimension": dimension, "unit": unit, "value": row.value * scale}
+            )
+            for row in series
+        )
+        for series in (factor, benchmark)
+    )
+
+    result = compute_event_reaction(event, factor, benchmark, spec)
+
+    assert result.method == method
+    assert result.factor_unit == result.benchmark_unit == unit
+    assert result.factor_dimension == result.benchmark_dimension == dimension
+    assert result.windows[0].car == pytest.approx(event_car * scale)
+    assert all(row.unit == unit for row in result.abnormal_returns)
+    assert all(row.measurement_dimension == dimension for row in result.abnormal_returns)
 
 
 def test_partial_estimation_data_remains_visible_in_fallback():
@@ -229,7 +317,11 @@ def test_market_adjusted_fallback_rejects_incomparable_numeric_units():
     event, factor, benchmark, spec = inputs()
     factor_bps = tuple(
         ReturnObservation.model_validate(
-            row.model_dump() | {"value": row.value * 10_000, "unit": ShockUnit.BASIS_POINT}
+            row.model_dump() | {
+                "value": row.value * 10_000,
+                "unit": ShockUnit.BASIS_POINT,
+                "measurement_dimension": "yield",
+            }
         )
         for row in factor[4:]
     )
@@ -242,13 +334,13 @@ def test_market_adjusted_fallback_rejects_ambiguous_absolute_units():
     event, factor, benchmark, spec = inputs()
     factor_absolute = tuple(
         ReturnObservation.model_validate(
-            row.model_dump() | {"unit": ShockUnit.ABSOLUTE}
+            row.model_dump() | {"unit": ShockUnit.ABSOLUTE, "measurement_dimension": "price"}
         )
         for row in factor[4:]
     )
     benchmark_absolute = tuple(
         ReturnObservation.model_validate(
-            row.model_dump() | {"unit": ShockUnit.ABSOLUTE}
+            row.model_dump() | {"unit": ShockUnit.ABSOLUTE, "measurement_dimension": "price"}
         )
         for row in benchmark[4:]
     )

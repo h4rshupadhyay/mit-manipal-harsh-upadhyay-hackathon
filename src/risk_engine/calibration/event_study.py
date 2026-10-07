@@ -28,6 +28,24 @@ class MeasurementDimension(str, Enum):
     CURRENCY = "currency"
 
 
+_DIMENSION_UNITS = {
+    MeasurementDimension.RETURN: frozenset({ShockUnit.DECIMAL, ShockUnit.PERCENT}),
+    MeasurementDimension.YIELD: frozenset(
+        {ShockUnit.DECIMAL, ShockUnit.PERCENT, ShockUnit.BASIS_POINT}
+    ),
+    MeasurementDimension.SPREAD: frozenset(
+        {ShockUnit.DECIMAL, ShockUnit.PERCENT, ShockUnit.BASIS_POINT}
+    ),
+    MeasurementDimension.VOLATILITY: frozenset({ShockUnit.VOLATILITY_POINT}),
+    MeasurementDimension.PRICE: frozenset(
+        {ShockUnit.DECIMAL, ShockUnit.PERCENT, ShockUnit.ABSOLUTE, ShockUnit.INDEX_POINT}
+    ),
+    MeasurementDimension.CURRENCY: frozenset(
+        {ShockUnit.DECIMAL, ShockUnit.PERCENT, ShockUnit.ABSOLUTE, ShockUnit.CURRENCY}
+    ),
+}
+
+
 class ReturnObservation(DomainModel):
     """One session's movement in its declared native unit and source identity."""
 
@@ -40,6 +58,12 @@ class ReturnObservation(DomainModel):
     series_version: NonEmptyString
     unit: ShockUnit
     measurement_dimension: MeasurementDimension
+
+    @model_validator(mode="after")
+    def unit_matches_measurement_dimension(self) -> ReturnObservation:
+        if self.unit not in _DIMENSION_UNITS[self.measurement_dimension]:
+            raise ValueError("unsupported unit for measurement dimension")
+        return self
 
 
 class EventStudyEvent(DomainModel):
@@ -139,6 +163,8 @@ def _index_series(
     if len({row.measurement_dimension for row in observations}) > 1:
         raise ValueError("mixed measurement dimensions in market observations")
     for row in observations:
+        if row.unit not in _DIMENSION_UNITS[row.measurement_dimension]:
+            raise ValueError("unsupported unit for measurement dimension")
         if row.session_date in by_date:
             raise ValueError(f"duplicate market observation on {row.session_date}")
         local_observed_at = row.observed_at.astimezone(zone)
