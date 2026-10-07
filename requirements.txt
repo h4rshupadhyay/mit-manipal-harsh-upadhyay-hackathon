@@ -5,12 +5,14 @@ hypothesis==6.168.3
 mypy==1.15.0
 numpy==2.5.3
 polars==1.44.2
+plotly==6.1.2
 pydantic==2.10.6
 pytest==8.3.5
 ruff==0.9.10
 scikit-learn==1.9.1
 scipy==1.16.3
 statsmodels==0.15.0
+streamlit==1.54.0
 torch==2.14.1
 transformers==5.18.0
 uvicorn==0.34.0
