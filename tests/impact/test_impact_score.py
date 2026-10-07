@@ -171,6 +171,31 @@ def test_audit_retains_loss_population_and_pool_support_without_source_text():
     )
 
 
+def test_calibration_summary_matches_actual_impact_audit():
+    fitted = estimator()
+    summary = fitted.calibration_summary
+    result = fitted.estimate(event(), AS_OF)
+    audit = json.loads(result.calibration_version)
+
+    assert summary.calibration_version == audit["calibration"]["version"]
+    assert summary.calibration_hash == audit["calibration_sha256"]
+    assert summary.reference_basket_version == result.reference_basket_version
+    assert summary.reference_basket_hash == audit["calibration"]["reference_basket_sha256"]
+    assert summary.matching_version == audit["matching_version"]
+    assert summary.training_event_ids == tuple(row["event_id"] for row in audit["training_losses"])
+    assert summary.cutpoints == tuple(Decimal(point) for point in audit["cutpoints"])
+    assert summary.currency == result.loss_currency == "USD"
+    assert summary.horizon_days == 1
+    assert summary.quantile_convention == "nearest-rank-lower-ties"
+    assert summary.frozen_at.isoformat() == audit["calibration"]["calibrated_at"].replace(
+        "Z", "+00:00"
+    )
+    object.__setattr__(summary, "cutpoints", ())
+    assert fitted.calibration_summary.cutpoints == tuple(
+        Decimal(point) for point in audit["cutpoints"]
+    )
+
+
 @pytest.mark.parametrize(
     ("loss", "score"), [(0, 1), (10, 1), (11, 2), (90, 9), (100, 10), (200, 10), (-20, 1)]
 )

@@ -138,6 +138,30 @@ class ConfidenceCalibrationIdentity(DomainModel):
         return self
 
 
+def confidence_calibration_identity(
+    calibrator: ConfidenceCalibrator,
+) -> ConfidenceCalibrationIdentity:
+    """Expose the exact fitted Confidence identity emitted in signal manifests."""
+    calibrator = ConfidenceCalibrator.model_validate(calibrator.model_dump(mode="python"))
+    return ConfidenceCalibrationIdentity(
+        target=calibrator.target,
+        calibration_version=calibrator.evidence.calibration_version,
+        evidence_kind=calibrator.evidence.evidence_kind,
+        calibration_evidence_snapshot_id=calibrator.evidence.snapshot_id,
+        calibration_evidence_snapshot_hash=calibrator.evidence.snapshot_hash,
+        development_start=calibrator.evidence.development_start,
+        development_end=calibrator.evidence.development_end,
+        frozen_at=calibrator.evidence.frozen_at,
+        score_definition=calibrator.evidence.score_definition,
+        fit_version=calibrator.fit_version,
+        transform_version=calibrator.transform_version,
+        temperature=calibrator.temperature,
+        evidence_hash=calibrator.evidence_hash,
+        fitted_artifact_hash=calibrator.fitted_artifact_hash,
+        source_terms=tuple(sorted({row.source_terms for row in calibrator.evidence.rows})),
+    )
+
+
 class CalibrationManifest(DomainModel):
     manifest_version: Literal["risk-engine-calibration-manifest-v1"] = (
         "risk-engine-calibration-manifest-v1"
@@ -276,23 +300,7 @@ class RiskEngine:
         self._event_model = event_model
         self._impact_estimator = impact_estimator
         self._confidence_calibrator = calibrator
-        self._confidence_calibration = ConfidenceCalibrationIdentity(
-            target=calibrator.target,
-            calibration_version=calibrator.evidence.calibration_version,
-            evidence_kind=calibrator.evidence.evidence_kind,
-            calibration_evidence_snapshot_id=calibrator.evidence.snapshot_id,
-            calibration_evidence_snapshot_hash=calibrator.evidence.snapshot_hash,
-            development_start=calibrator.evidence.development_start,
-            development_end=calibrator.evidence.development_end,
-            frozen_at=calibrator.evidence.frozen_at,
-            score_definition=calibrator.evidence.score_definition,
-            fit_version=calibrator.fit_version,
-            transform_version=calibrator.transform_version,
-            temperature=calibrator.temperature,
-            evidence_hash=calibrator.evidence_hash,
-            fitted_artifact_hash=calibrator.fitted_artifact_hash,
-            source_terms=tuple(sorted({row.source_terms for row in calibrator.evidence.rows})),
-        )
+        self._confidence_calibration = confidence_calibration_identity(calibrator)
         self._configuration = configuration
         self._materiality_provider = materiality_provider
 

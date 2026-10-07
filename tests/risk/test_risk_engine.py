@@ -35,6 +35,7 @@ from risk_engine.risk.module import (
     ModelIdentity,
     PortfolioMaterialityAudit,
     RiskEngine,
+    confidence_calibration_identity,
 )
 from risk_engine.risk.policy import TriggerPolicy
 
@@ -423,6 +424,21 @@ def test_versions_are_canonical_complete_audit_manifests(
         signal.versions.snapshot_version,
     ):
         assert manifest == json.dumps(json.loads(manifest), sort_keys=True, separators=(",", ":"))
+
+
+def test_confidence_identity_helper_preserves_signal_manifest_bytes(
+    calibrator: ConfidenceCalibrator,
+) -> None:
+    identity = confidence_calibration_identity(calibrator)
+    engine, _, _ = build_engine(calibrator)
+    signal = engine.analyze((source("Beta Bank failed."),), TIME)[0]
+    manifest = json.loads(signal.versions.calibration_version)
+
+    assert identity.model_dump(mode="json") == manifest["confidence_calibration"]
+    assert sha256(signal.versions.calibration_version.encode()).hexdigest() == (
+        "ba51518dc48d0bf89befaf0ee4166a879cf8fcecbc9c28b1deef30d1eb15c778"
+    )
+    assert confidence_calibration_identity(calibrator) == identity
 
 
 @pytest.mark.parametrize(

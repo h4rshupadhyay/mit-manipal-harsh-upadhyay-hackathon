@@ -299,6 +299,28 @@ class ImpactAudit(DomainModel):
     hypothetical_loss: LossEvidence | None
 
 
+class ImpactCalibrationSummary(DomainModel):
+    calibration_version: NonEmptyString
+    calibration_hash: Sha256Hex
+    reference_basket_version: NonEmptyString
+    reference_basket_hash: Sha256Hex
+    matching_version: NonEmptyString
+    training_event_ids: tuple[NonEmptyString, ...]
+    cutpoints: tuple[Decimal, ...] = Field(min_length=9, max_length=9)
+    currency: CurrencyCode
+    horizon_days: int = Field(strict=True, gt=0)
+    quantile_convention: Literal["nearest-rank-lower-ties"]
+    frozen_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def valid_population(self) -> "ImpactCalibrationSummary":
+        if len(set(self.training_event_ids)) != len(self.training_event_ids):
+            raise ValueError("duplicate Impact training event identity")
+        if any(a > b for a, b in zip(self.cutpoints, self.cutpoints[1:], strict=False)):
+            raise ValueError("Impact cutpoints must be nondecreasing")
+        return self
+
+
 class ImpactEstimator:
     """Small public scoring seam; no current Synthetic Portfolio input exists."""
 
@@ -324,6 +346,24 @@ class ImpactEstimator:
         population = sorted(row.loss for row in self._training_losses)
         self._cutpoints = tuple(
             population[ceil(len(population) * k / 10) - 1] for k in range(1, 10)
+        )
+
+    @property
+    def calibration_summary(self) -> ImpactCalibrationSummary:
+        """Return a fresh validated view of the actual frozen Impact fit."""
+        calibration = self._calibration
+        return ImpactCalibrationSummary(
+            calibration_version=calibration.version,
+            calibration_hash=_hash(calibration),
+            reference_basket_version=calibration.reference_basket.version,
+            reference_basket_hash=_hash(calibration.reference_basket),
+            matching_version=self._repository._config.version,
+            training_event_ids=tuple(row.analogue.event_id for row in calibration.training),
+            cutpoints=self._cutpoints,
+            currency=calibration.reference_basket.valuation_currency,
+            horizon_days=calibration.window.end - calibration.window.start + 1,
+            quantile_convention=calibration.quantile_convention,
+            frozen_at=calibration.calibrated_at,
         )
 
     def _stress(self, market: MarketSnapshot, scenario: StressScenario) -> StressResult:
