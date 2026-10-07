@@ -333,7 +333,7 @@ class DevelopmentConfiguration(Record):
     frozen_at: AwareDatetime
     candidates: Annotated[tuple[CandidateSpec, ...], Field(min_length=1)]
     split: ChronologicalSplitSpec
-    objective: Literal["event-class-macro-f1"]
+    objective: Literal["event-class-macro-f1", "normalized-ordinal-impact-accuracy-v1"]
     direction: Literal["maximize"]
     sensitivity_parameters: tuple[NonEmptyString, ...]
     reliability_bin_edges: tuple[float, ...]
@@ -770,6 +770,43 @@ class ScoredPartition(Record):
     metrics: MetricEvidence
 
 
+def development_objective(scored: ScoredPartition, objective: str) -> float:
+    """Extract the declared objective from complete, independent ordinal evidence."""
+    if objective == "event-class-macro-f1":
+        return scored.metrics.classification.macro_f1
+    if objective != "normalized-ordinal-impact-accuracy-v1":
+        raise ValueError("unknown development objective")
+    scored = _copy(scored)
+    severity = scored.metrics.severity
+    if not scored.cases or severity is None:
+        raise ValueError("ordinal objective requires a complete scored severity population")
+    if not math.isfinite(severity.ordinal_mae) or not 0 <= severity.ordinal_mae <= 9:
+        raise ValueError("ordinal objective requires finite MAE in 0..9")
+    scores, deciles, losses = [], [], []
+    for row in scored.cases:
+        signal = row.chosen_signal
+        if signal is None:
+            raise ValueError("ordinal objective cannot score abstentions")
+        if row.fit_hash != scored.fit.manifest_hash or row.impact_fit != scored.fit.impact:
+            raise ValueError("ordinal objective case fitted identity mismatch")
+        matching = tuple(
+            loss
+            for loss in row.observed.reference_losses
+            if loss.basket_hash == row.impact_fit.reference_basket_hash
+            and loss.currency == row.impact_fit.currency
+        )
+        if len(matching) != 1 or signal.impact.loss_currency != row.impact_fit.currency:
+            raise ValueError("ordinal objective requires exactly one matching independent loss")
+        ref = matching[0]
+        scores.append(signal.impact.impact_score)
+        deciles.append(1 + sum(ref.loss > cutpoint for cutpoint in row.impact_fit.cutpoints))
+        losses.append(_as_float(ref.loss))
+    expected = m.severity_metrics(scores, deciles, losses, scored.fit.impact.currency)
+    if severity != expected:
+        raise ValueError("ordinal objective severity contradicts the complete scored population")
+    return 1 - severity.ordinal_mae / 9
+
+
 class InnerCandidateAudit(Record):
     candidate: CandidateSpec
     validations: tuple[ScoredPartition, ...]
@@ -945,9 +982,8 @@ class BacktestAudit(Record):
                             self.dataset_hash,
                             snapshot_id,
                         )
-                        if (
-                            objective.fold != inner
-                            or objective.score != scored.metrics.classification.macro_f1
+                        if objective.fold != inner or objective.score != development_objective(
+                            scored, config.objective
                         ):
                             raise ValueError("audit objective contradicts metric evidence")
                 _verify_scored(
@@ -1703,7 +1739,7 @@ class BacktestModule:
                     validations.append(scored)
                     fold_results.append(
                         m.InnerDevelopmentResult(
-                            fold=inner, score=scored.metrics.classification.macro_f1
+                            fold=inner, score=development_objective(scored, config.objective)
                         )
                     )
                 evidence = m.CandidateDevelopmentResult(

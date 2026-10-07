@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from risk_engine.backtest import module as backtest
 from risk_engine.backtest.module import (
     BacktestAudit,
     BacktestDataset,
@@ -426,13 +427,17 @@ class Fitter:
             fitted_artifact_hash=calibrator.fitted_artifact_hash,
             source_terms=TERMS,
         )
-        losses = sorted(o.reference_losses[0].loss for o in training.outcomes)
+        basket_hash = candidate.parameters.get("reference-basket-hash", BASKET_HASH)
+        losses = sorted(
+            next(ref.loss for ref in outcome.reference_losses if ref.basket_hash == basket_hash)
+            for outcome in training.outcomes
+        )
         identity = ImpactFitIdentity(
             evidence_kind="synthetic",
             calibration_version="synthetic-impact-v1",
             calibration_hash=content_hash({"training": training.membership_hash, "losses": losses}),
             reference_basket_version="synthetic-reference-v1",
-            reference_basket_hash=BASKET_HASH,
+            reference_basket_hash=basket_hash,
             matching_version="synthetic-training-only-v1",
             training_event_ids=tuple(g.cluster_id for g in training.groups),
             cutpoints=tuple(
@@ -1270,3 +1275,402 @@ def test_final_fit_cutoff_may_be_after_publication_but_before_replay_as_of(tmp_p
     module.evaluate(dataset, config, period)
     assert module.audit.locked.fitted.fit_cutoff == config.final_fit_cutoff
     assert module.audit.locked.fitted.fit_cutoff <= dataset.cases[-2].as_of
+
+
+# Captured from untouched fe084fe, before the objective implementation. These
+# digests cover complete records, including every nested case and artifact field.
+LEGACY_CANONICAL_HASHES = (
+    "81b57bd045422e52c705d3e9d247035a9d80aef95420f24d64d242c45c25d54d",
+    "714a54ecd4f2866c47f811020eab3daed73803b1d68e8009c94f7dd36b54a74a",
+    "eee5f496fa2ceb19d203762b83ffb318cd992e10b2a049da4038d1092ccfca51",
+    "3f626f0e8adc9397eae82e3d1f9dff76dc3b8f44b4b993a1868e6c757843bca7",
+    "a800cbcc5ea937a2b38bdd7010681d0eb9d37f8066668ee4a190035aebe636d4",
+)
+LEGACY_MODEL_JSON_HASHES = (
+    "36f81fe2a90bddd02ae2643d898ad79bd7a2c01bbcc372c32acf09e25d5fd49f",
+    "d426361b1ea7f230bf91c8d9a9d971b624fd8470576109bc5315c763e383c833",
+    "0c7abb622da8d00525fefac3b091396e5031432fc42d40cb2c50ba04fe5020bc",
+    "740e3d89931689f4842fe1842abf6ff898587c9cfea6e49cc74837d307eea3e7",
+    "4b00aa82d7ff7d478f303c0cef17ce1fdfb6389afe21349ac307cdf0ed367a63",
+)
+LEGACY_COMPLETE_RECORDS_HASH = "0253a068cef4665e65f64745c32d31b6e4cfe97d838f58a5b6388918fe42f405"
+
+
+def test_legacy_configuration_lock_and_artifact_bytes_are_unchanged(tmp_path, monkeypatch):
+    from risk_engine.backtest.module import CutpointsPayload, DevelopmentPayload, SelectedPayload
+
+    monkeypatch.chdir(tmp_path)
+    root = Path("legacy-fit")
+    root.mkdir()
+    dataset = bundle()
+    config, period = configuration(dataset)
+    module = BacktestModule(Fitter(root, config), StressEngine())
+    report = module.evaluate(dataset, config, period)
+    audit = module.audit
+    envelopes = cli().make_artifact_set(
+        (
+            SelectedPayload(artifact_type="selected-config", locked=audit.locked),
+            CutpointsPayload(
+                artifact_type="impact-cutpoints",
+                status="synthetic-only",
+                fit_hash=audit.selected_final_manifest.manifest_hash,
+                training_hash=audit.selected_final_manifest.training_hash,
+                identity=audit.selected_final_manifest.impact,
+            ),
+            DevelopmentPayload(artifact_type="development-backtest", report=report, audit=audit),
+        ),
+        artifact_set_id=f"development:{audit.locked.lock_hash}",
+        authored_at=config.final_fit_cutoff,
+        source_terms=dataset.source_terms,
+        evidence_kind=dataset.evidence_kind,
+        status="ready",
+    )
+    records = (config, audit.locked, *envelopes)
+    assert tuple(content_hash(record) for record in records) == LEGACY_CANONICAL_HASHES
+    assert content_hash(records) == LEGACY_COMPLETE_RECORDS_HASH
+    assert tuple(sha256(record.model_dump_json().encode()).hexdigest() for record in records) == (
+        LEGACY_MODEL_JSON_HASHES
+    )
+    for record in records:
+        restored = type(record).model_validate_json(canonical_bytes(record))
+        assert canonical_bytes(restored) == canonical_bytes(record)
+        ordinary = type(record).model_validate_json(record.model_dump_json())
+        assert ordinary.model_dump_json() == record.model_dump_json()
+    assert config.objective == "event-class-macro-f1"
+    for outer in audit.outer_results:
+        for candidate in outer.inner_candidates:
+            for scored, result in zip(
+                candidate.validations, candidate.development_result.fold_results, strict=True
+            ):
+                assert result.score == scored.metrics.classification.macro_f1
+
+
+@pytest.fixture(scope="module")
+def ordinal_evidence(tmp_path_factory):
+    dataset = bundle()
+    config, period = configuration(dataset)
+    module = BacktestModule(
+        Fitter(tmp_path_factory.mktemp("ordinal-evidence"), config), StressEngine()
+    )
+    module.evaluate(dataset, config, period)
+    return module.audit.outer_results[0].inner_candidates[0].validations[0], config, dataset
+
+
+def ordinal_partition(evidence, loss):
+    scored, config, dataset = evidence
+    row = scored.cases[0]
+    signal = row.chosen_signal.model_copy(
+        update={"impact": row.chosen_signal.impact.model_copy(update={"impact_score": 1})}
+    )
+    outcome_payload = row.observed.model_dump(exclude={"evidence_hash"})
+    ref = row.observed.reference_losses[0].model_copy(update={"loss": Decimal(loss)})
+    outcome_payload["reference_losses"] = (ref,)
+    outcome = seal(ObservedOutcome, outcome_payload, "evidence_hash")
+    decision = TriggerPolicy(row.policy_binding.concrete_policy, as_of=row.as_of).evaluate(
+        signal, row.decision.portfolio_materiality
+    )
+    row = backtest.CaseEvaluation.model_validate(
+        row.model_copy(
+            update={"chosen_signal": signal, "observed": outcome, "decision": decision}
+        ).model_dump()
+    )
+    rows = (row,)
+    return scored.model_copy(
+        update={"cases": rows, "metrics": backtest._metrics(rows, config, dataset.snapshot_id)}
+    )
+
+
+@pytest.mark.parametrize(("loss", "expected"), (("100", 1.0), ("120", 0.0), ("105", 1 - 5 / 9)))
+def test_normalized_ordinal_objective_supports_one_case_folds(ordinal_evidence, loss, expected):
+    scored = ordinal_partition(ordinal_evidence, loss)
+    assert scored.metrics.severity.rank_correlation is None
+    assert scored.cases[0].observed.reference_losses[0].loss != (
+        scored.cases[0].chosen_signal.impact.expected_reference_loss
+    )
+    assert (
+        backtest.development_objective(scored, "normalized-ordinal-impact-accuracy-v1") == expected
+    )
+    assert backtest.development_objective(scored, "event-class-macro-f1") == (
+        scored.metrics.classification.macro_f1
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "empty",
+        "abstention",
+        "absent-loss",
+        "duplicate-loss",
+        "basket",
+        "currency",
+        "predicted-currency",
+        "missing-severity",
+        "nan",
+        "infinity",
+        "negative",
+        "above-nine",
+        "population",
+        "contradictory-mae",
+        "wrong-case-fit",
+        "unknown",
+    ),
+)
+def test_ordinal_objective_rejects_partial_or_unmatched_population(ordinal_evidence, mutation):
+    scored = ordinal_partition(ordinal_evidence, "105")
+    row = scored.cases[0]
+    if mutation == "empty":
+        scored = scored.model_copy(update={"cases": ()})
+    elif mutation == "abstention":
+        row = row.model_copy(
+            update={
+                "chosen_signal": None,
+                "chosen_signal_id": None,
+                "returned_signal_ids": (),
+                "abstention_reason": "project-authored abstention",
+                "scenario": None,
+                "stress": None,
+                "decision": None,
+                "policy_binding": None,
+            }
+        )
+    elif mutation in {"absent-loss", "duplicate-loss", "basket", "currency"}:
+        ref = row.observed.reference_losses[0]
+        losses = (
+            ()
+            if mutation == "absent-loss"
+            else (ref, ref)
+            if mutation == "duplicate-loss"
+            else (
+                ref.model_copy(update={"basket_hash": "0" * 64})
+                if mutation == "basket"
+                else ref.model_copy(update={"currency": "INR"}),
+            )
+        )
+        outcome = row.observed.model_dump(exclude={"evidence_hash"})
+        outcome["reference_losses"] = losses
+        outcome["reference_loss_absence_reason"] = (
+            "no independent observation" if not losses else None
+        )
+        outcome["evidence_hash"] = content_hash(outcome)
+        row = row.model_copy(update={"observed": ObservedOutcome.model_construct(**outcome)})
+    elif mutation == "predicted-currency":
+        signal = row.chosen_signal.model_copy(
+            update={"impact": row.chosen_signal.impact.model_copy(update={"loss_currency": "INR"})}
+        )
+        row = row.model_copy(update={"chosen_signal": signal})
+    elif mutation == "wrong-case-fit":
+        row = row.model_copy(update={"fit_hash": "0" * 64})
+    else:
+        metrics = scored.metrics
+        severity = metrics.severity
+        if mutation == "missing-severity":
+            severity = None
+        elif mutation == "population":
+            severity = severity.model_copy(
+                update={"buckets": (severity.buckets[0].model_copy(update={"count": 2}),)}
+            )
+        elif mutation in {"nan", "infinity", "negative", "above-nine", "contradictory-mae"}:
+            mae = {
+                "nan": float("nan"),
+                "infinity": float("inf"),
+                "negative": -1.0,
+                "above-nine": 10.0,
+                "contradictory-mae": 4.0,
+            }[mutation]
+            severity = severity.model_copy(update={"ordinal_mae": mae})
+        scored = scored.model_copy(
+            update={"metrics": metrics.model_copy(update={"severity": severity})}
+        )
+    if mutation != "empty":
+        scored = scored.model_copy(update={"cases": (row,)})
+    with pytest.raises(ValueError):
+        backtest.development_objective(
+            scored,
+            "unknown-objective"
+            if mutation == "unknown"
+            else "normalized-ordinal-impact-accuracy-v1",
+        )
+
+
+def test_development_configuration_accepts_ordinal_objective_without_new_fields():
+    config, _ = configuration(bundle())
+    payload = config.model_dump()
+    payload["objective"] = "normalized-ordinal-impact-accuracy-v1"
+    ordinal = DevelopmentConfiguration.model_validate(payload)
+    assert ordinal.model_dump() == payload
+    assert ordinal.direction == "maximize"
+    assert ordinal.schema_version == "backtest-development-v1"
+
+
+ORDINAL_BASKET_HASH = content_hash({"synthetic_reference_basket": "independent-ordinal-v1"})
+
+
+def ordinal_bundle(*, tied_losses=False):
+    payload = bundle().model_dump(exclude={"content_hash"})
+    for index, outcome in enumerate(payload["outcomes"]):
+        # Two independently declared Reference Basket outcomes. They are never
+        # copied from a signal or inferred from its predicted reference loss.
+        original = ReferenceLoss.model_validate(outcome["reference_losses"][0])
+        simple_loss = original.model_copy(
+            update={
+                "loss": Decimal("100"),
+                "derivation_reference": "project-authored constant basket outcome",
+                "derivation_hash": content_hash({"basket": "simple", "case": index, "loss": "100"}),
+            }
+        )
+        complex_amount = Decimal("100") if tied_losses else Decimal(100 + index * 10)
+        complex_loss = original.model_copy(
+            update={
+                "basket_hash": ORDINAL_BASKET_HASH,
+                "loss": complex_amount,
+                "derivation_reference": "project-authored chronological basket outcome",
+                "derivation_hash": content_hash(
+                    {"basket": "complex", "case": index, "loss": complex_amount}
+                ),
+            }
+        )
+        outcome["reference_losses"] = (simple_loss, complex_loss)
+        outcome["evidence_hash"] = content_hash(
+            {k: v for k, v in outcome.items() if k != "evidence_hash"}
+        )
+    return seal(BacktestDataset, payload, "content_hash")
+
+
+def ordinal_configuration(dataset, objective):
+    config, period = configuration(dataset)
+    payload = config.model_dump()
+    payload["objective"] = objective
+    for candidate in payload["candidates"]:
+        candidate["parameters"]["class-index"] = 2
+        candidate["parameters"]["reference-basket-hash"] = (
+            BASKET_HASH if candidate["candidate_id"] == "simple" else ORDINAL_BASKET_HASH
+        )
+    payload["sensitivity_parameters"] = ("reference-basket-hash",)
+    return DevelopmentConfiguration.model_validate(payload), period
+
+
+def test_ordinal_objective_changes_selection_when_classification_is_tied(tmp_path):
+    dataset = ordinal_bundle()
+    for objective, expected_winner in (
+        ("event-class-macro-f1", "simple"),
+        ("normalized-ordinal-impact-accuracy-v1", "complex"),
+    ):
+        root = tmp_path / objective
+        root.mkdir()
+        config, period = ordinal_configuration(dataset, objective)
+        module = BacktestModule(Fitter(root, config), StressEngine())
+        report = module.evaluate(dataset, config, period)
+        audit = module.audit
+        assert len(audit.outer_results) == 3
+        assert audit.locked.selection.selected_candidate_id == expected_winner
+        assert audit.locked.fitted.candidate.candidate_id == expected_winner
+        assert [c.candidate_id for c in report.candidate_configurations if c.selected] == [
+            expected_winner
+        ]
+        assert len(report.candidate_configurations) == len(report.sensitivity_results) == 2
+        assert len(audit.sensitivity_observations) == 2
+        for outer in audit.outer_results:
+            assert outer.selection.selected_candidate_id == expected_winner
+            assert outer.selection.convention_version == "one-standard-error-v1"
+            assert {c.candidate.candidate_id for c in outer.inner_candidates} == {
+                "simple",
+                "complex",
+            }
+            assert all(len(c.validations) >= 2 for c in outer.inner_candidates)
+            classification = [
+                tuple(v.metrics.classification.macro_f1 for v in candidate.validations)
+                for candidate in outer.inner_candidates
+            ]
+            assert classification[0] == classification[1]
+            for candidate in outer.inner_candidates:
+                for validation, result in zip(
+                    candidate.validations, candidate.development_result.fold_results, strict=True
+                ):
+                    assert candidate.development_result.objective_name == objective
+                    assert candidate.development_result.objective_unit == "fraction"
+                    assert result.score == backtest.development_objective(validation, objective)
+                    expected_mae = 7 if candidate.candidate.candidate_id == "simple" else 2
+                    assert validation.metrics.severity.ordinal_mae == expected_mae
+                    assert {
+                        ref.basket_hash
+                        for row in validation.cases
+                        for ref in row.observed.reference_losses
+                    } == {
+                        BASKET_HASH,
+                        ORDINAL_BASKET_HASH,
+                    }
+        for candidate in report.candidate_configurations:
+            expected_mae = 7 if candidate.candidate_id == "simple" else 2
+            assert all(
+                value == expected_mae
+                for key, value in candidate.metrics.items()
+                if key.endswith("severity.ordinal_mae")
+            )
+        assert report.sensitivity_results[0].metrics == report.sensitivity_results[1].metrics
+        assert tuple(s.metrics for s in audit.sensitivity_observations) == tuple(
+            s.metrics for s in report.sensitivity_results
+        )
+    # Replay again with only the independent complex-basket outcomes changed.
+    # Constant outcomes tie the ordinal errors and restore the complexity winner.
+    tied = ordinal_bundle(tied_losses=True)
+    config, period = ordinal_configuration(tied, "normalized-ordinal-impact-accuracy-v1")
+    root = tmp_path / "tied-outcomes"
+    root.mkdir()
+    module = BacktestModule(Fitter(root, config), StressEngine())
+    module.evaluate(tied, config, period)
+    assert module.audit.locked.selection.selected_candidate_id == "simple"
+    assert all(
+        result.score == 1 - 7 / 9
+        for outer in module.audit.outer_results
+        for candidate in outer.inner_candidates
+        for result in candidate.development_result.fold_results
+    )
+
+
+def test_rehashed_audit_rejects_ordinal_score_contradicting_retained_evidence(tmp_path):
+    from risk_engine.backtest import metrics
+
+    dataset = ordinal_bundle()
+    config, period = ordinal_configuration(dataset, "normalized-ordinal-impact-accuracy-v1")
+    module = BacktestModule(Fitter(tmp_path, config), StressEngine())
+    report = module.evaluate(dataset, config, period)
+    audit = module.audit
+    payload = audit.model_dump()
+    outer = payload["outer_results"][0]
+    candidate = outer["inner_candidates"][0]
+    candidate["development_result"]["fold_results"][0]["score"] += 0.01
+    rebuilt_selection = metrics.select_within_one_standard_error(
+        tuple(
+            metrics.CandidateDevelopmentResult.model_validate(c["development_result"])
+            for c in outer["inner_candidates"]
+        )
+    )
+    assert (
+        rebuilt_selection.selected_candidate_id
+        == audit.outer_results[0].selection.selected_candidate_id
+    )
+    outer["selection"] = rebuilt_selection.model_dump()
+    # Rehash all envelope receipts to demonstrate rejection of the evidence
+    # contradiction itself rather than a stale outer digest.
+    development = {"artifact_type": "development-backtest", "report": report, "audit": payload}
+    with pytest.raises(ValueError, match="objective contradicts"):
+        envelope = cli().make_artifact_set(
+            (
+                backtest.SelectedPayload(artifact_type="selected-config", locked=audit.locked),
+                backtest.CutpointsPayload(
+                    artifact_type="impact-cutpoints",
+                    status="synthetic-only",
+                    fit_hash=audit.selected_final_manifest.manifest_hash,
+                    training_hash=audit.selected_final_manifest.training_hash,
+                    identity=audit.selected_final_manifest.impact,
+                ),
+                backtest.DevelopmentPayload.model_construct(**development),
+            ),
+            artifact_set_id=f"development:{audit.locked.lock_hash}",
+            authored_at=config.final_fit_cutoff,
+            source_terms=dataset.source_terms,
+            evidence_kind=dataset.evidence_kind,
+            status="ready",
+        )
+        backtest.ArtifactEnvelope.model_validate_json(canonical_bytes(envelope[2]))
