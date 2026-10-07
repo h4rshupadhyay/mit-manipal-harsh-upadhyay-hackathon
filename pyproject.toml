@@ -7,7 +7,7 @@ name = "financial-risk-engine"
 version = "0.1.0"
 description = "Explainable NLP risk signals and portfolio stress testing"
 readme = "README.md"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.12,<3.13"
 license = { file = "LICENSE" }
 authors = [{ name = "Harsh Upadhyay" }]
 dependencies = [
@@ -46,16 +46,18 @@ markers = ["model: explicitly supplied local model snapshots (CPU smoke test)"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+# Preserve eager public type aliases used by existing Pydantic records.
+ignore = ["UP040"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["UP017"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 files = ["src"]

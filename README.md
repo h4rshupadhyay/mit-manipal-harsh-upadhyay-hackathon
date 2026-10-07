@@ -27,7 +27,7 @@ The application is a single local Python deployment with four core modules:
 
 The analyst interface will use FastAPI for machine-readable output and Streamlit for Signal Monitor, Portfolio Stress, and Backtest Evidence views.
 
-**Planned stack:** Python 3.11, Pydantic, FastAPI, Streamlit, DuckDB, Polars, NumPy, SciPy, statsmodels, scikit-learn, PyTorch/Transformers, Plotly, pytest, Hypothesis, Ruff, and mypy.
+**Planned stack:** Python 3.12, Pydantic, FastAPI, Streamlit, DuckDB, Polars, NumPy, SciPy, statsmodels, scikit-learn, PyTorch/Transformers, Plotly, pytest, Hypothesis, Ruff, and mypy.
 
 - [Approved system design](docs/superpowers/specs/2026-10-04-financial-risk-engine-design.md)
 - [Implementation plan](docs/superpowers/plans/2026-10-04-financial-risk-engine.md)
@@ -45,14 +45,14 @@ The project uses no confidential S&P Global, Crisil, client, or proprietary inst
 
 ## 4. Quickstart & Installation
 
-Runtime: Python 3.11 on Linux; CPU execution is supported, with optional NVIDIA GPU acceleration.
+Runtime: Python 3.12 on Linux; CPU execution is supported, with optional NVIDIA GPU acceleration.
 
 The executable application is currently under construction. The final evaluator workflow will be:
 
 ```bash
 git clone git@github.com:h4rshupadhyay/mit-manipal-harsh-upadhyay-hackathon.git
 cd mit-manipal-harsh-upadhyay-hackathon
-python3.11 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python scripts/run_demo.py
