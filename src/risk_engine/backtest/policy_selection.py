@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from bisect import bisect_left
+from datetime import UTC, timedelta
 from decimal import (
     MAX_EMAX,
     MIN_EMIN,
@@ -23,12 +24,13 @@ from risk_engine.backtest.module import (
     FittedManifest,
     ObservedOutcome,
     Record,
+    TrainingPartition,
     _verify_calibration,
     content_hash,
     decode_impact_audit,
 )
 from risk_engine.backtest.runtime_inputs import PolicySelectionSpec, RuntimeRecord
-from risk_engine.backtest.splits import InnerFold
+from risk_engine.backtest.splits import FoldGroup, InnerFold
 from risk_engine.domain import (
     AttributionDimension,
     ConfidenceTarget,
@@ -46,6 +48,60 @@ from risk_engine.impact.reference_basket import (
 from risk_engine.risk.policy import TriggerCriteria, evaluate_candidate_trigger
 
 Count = Annotated[int, Field(strict=True, ge=0)]
+
+
+def policy_folds(
+    training: TrainingPartition, spec: PolicySelectionSpec, *, embargo: timedelta
+) -> tuple[InnerFold, ...]:
+    """Plan disjoint validation blocks entirely within supplied training membership."""
+    training = TrainingPartition.model_validate(training.model_dump(mode="python"))
+    return _policy_folds_from_groups(training.groups, spec, embargo=embargo)
+
+
+def _policy_folds_from_groups(
+    supplied_groups: tuple[FoldGroup, ...], spec: PolicySelectionSpec, *, embargo: timedelta
+) -> tuple[InnerFold, ...]:
+    """Revalidate the same plan at restore without reopening cases or labels."""
+    spec = PolicySelectionSpec.model_validate(spec.model_dump(mode="python"))
+    if not isinstance(embargo, timedelta) or embargo <= timedelta(0):
+        raise ValueError("policy folds require a positive validated embargo")
+    supplied_groups = tuple(
+        FoldGroup.model_validate(g.model_dump(mode="python")) for g in supplied_groups
+    )
+    groups = tuple(
+        sorted(
+            (
+                FoldGroup.model_validate(
+                    g.model_dump() | {"event_time": g.event_time.astimezone(UTC)}
+                )
+                for g in supplied_groups
+            ),
+            key=lambda g: (g.event_time, g.cluster_id),
+        )
+    )
+    # InnerFold validates duplicate cluster/source identities as well as ordering.
+    if len({g.cluster_id for g in groups}) != len(groups) or len(
+        {source for g in groups for source in g.source_item_ids}
+    ) != sum(len(g.source_item_ids) for g in groups):
+        raise ValueError("duplicate policy training cluster/source membership")
+    folds: list[InnerFold] = []
+    start = spec.train_groups
+    last = len(groups) - spec.validation_groups
+    while start <= last:
+        eligible = sum(g.event_time + embargo <= groups[start].event_time for g in groups[:start])
+        if eligible < spec.train_groups:
+            start += 1
+            continue
+        folds.append(
+            InnerFold(
+                fold_id=f"policy-inner-{len(folds) + 1:04d}",
+                train=groups[eligible - spec.train_groups : eligible],
+                embargo=groups[eligible:start],
+                validation=groups[start : start + spec.validation_groups],
+            )
+        )
+        start += spec.validation_groups
+    return tuple(folds)
 
 
 class PolicyObservation(RuntimeRecord):

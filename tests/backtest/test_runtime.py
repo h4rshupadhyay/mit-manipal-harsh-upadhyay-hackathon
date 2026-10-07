@@ -531,37 +531,15 @@ def test_only_specific_confidence_insufficiency_conditions_are_abstentions(
             fitter.fit(candidate, training, as_of=training.cutoff)
 
 
-def test_public_held_out_mode_is_refused_and_core_does_not_select_policy(tmp_path):
-    from risk_engine.backtest.runtime import ProductionCandidateFitter
-    from risk_engine.backtest.runtime_inputs import RuntimeDefinition
-    from tests.backtest.runtime_fixtures import seal
-    from tests.backtest.test_policy_selection import _spec
-
-    configuration, definition, index, locations, candidate, training = production_inputs(tmp_path)
-    payload = definition.model_dump(exclude={"content_hash"})
-    payload["policy_selection"] = _spec()
-    definition = seal(RuntimeDefinition, payload, "content_hash")
-    parameters = {
-        **candidate.parameters,
-        "runtime_definition_sha256": definition.content_hash,
-        "policy_mode": "held-out-material-event-f1-v1",
-    }
-    candidate = candidate.model_copy(update={"parameters": parameters})
-    configuration = configuration.model_copy(update={"candidates": (candidate,)})
-    backend = SimulationBackend()
-    fitter = ProductionCandidateFitter(
-        configuration=configuration,
-        definition=definition,
-        evidence_index=index,
-        model_locations=locations,
-        artifact_root=tmp_path / "states",
-        backend=backend,
-    )
-    with pytest.raises(ValueError, match="Task 4"):
-        fitter.fit(candidate, training, as_of=training.cutoff)
-    assert backend.loads == 0
-    runtime = fitter._fit_core(candidate, training, as_of=training.cutoff)
-    assert runtime.manifest.candidate == candidate and runtime.manifest.policy is None
+def test_public_held_out_mode_retains_empty_audit_and_core_is_nonrecursive(tmp_path):
+    spec = policy_spec(train_groups=10)
+    fitter, candidate, training, _ = fitter_inputs(tmp_path, policy_spec=spec)
+    core = fitter._fit_core(candidate, training, as_of=training.cutoff)
+    assert core.manifest.candidate == candidate and core.manifest.policy is None
+    assert core._state.policy_audit is None
+    runtime = fitter.fit(candidate, training, as_of=training.cutoff)
+    assert runtime._state.policy_audit.folds == ()
+    assert runtime.manifest.policy_absence_reason == "insufficient eligible cases"
 
 
 def test_fit_rejects_analogue_group_time_mismatch_before_inference(tmp_path):
@@ -697,3 +675,565 @@ def test_scenarios_validate_all_support_consumed_cluster_members(tmp_path, mutat
         member = member.model_copy(update={"text": member.text + " changed bytes"})
     with pytest.raises(ValueError, match="Source Item.*unavailable|Source Item.*hash"):
         runtime.scenarios(signal, with_member(member), as_of=case.as_of)
+
+
+def policy_spec(**changes):
+    from tests.backtest.test_policy_selection import _spec
+
+    return _spec(
+        **(
+            dict(
+                train_groups=2,
+                validation_groups=1,
+                minimum_cases=2,
+                confidence_thresholds=(Decimal("0.1"), Decimal("0.5")),
+                economic_floors=(Decimal("5"), Decimal("10")),
+            )
+            | changes
+        )
+    )
+
+
+def test_policy_subfits_never_consume_internal_validation_labels(tmp_path, monkeypatch):
+    import risk_engine.backtest.runtime as runtime_module
+    from risk_engine.backtest.policy_selection import policy_folds
+    from risk_engine.risk.module import RiskEngine
+
+    fitter, candidate, training, _ = fitter_inputs(
+        tmp_path, count=14, policy_spec=policy_spec(train_groups=10)
+    )
+    folds = policy_folds(
+        training, fitter.definition.policy_selection, embargo=fitter.configuration.split.embargo
+    )
+    calls, reads, replays = [], [], []
+    core = fitter._fit_core
+    load = runtime_module.load_training_evidence
+    analyze = RiskEngine.analyze
+
+    def fitting(chosen, partition, *, as_of, **kwargs):
+        calls.append((chosen, partition.groups, tuple(c.case_id for c in partition.cases), as_of))
+        return core(chosen, partition, as_of=as_of, **kwargs)
+
+    def reading(index, partition):
+        reads.append(tuple(c.case_id for c in partition.cases))
+        return load(index, partition)
+
+    def replay(self, source_items, as_of):
+        replays.append((tuple(i.source_item_id for i in source_items), as_of))
+        return analyze(self, source_items, as_of)
+
+    monkeypatch.setattr(fitter, "_fit_core", fitting)
+    monkeypatch.setattr(runtime_module, "load_training_evidence", reading)
+    monkeypatch.setattr(RiskEngine, "analyze", replay)
+    result = fitter.fit(candidate, training, as_of=training.cutoff)
+    cases = {c.cluster.cluster_id: c for c in training.cases}
+    assert len(calls) == len(folds) + 1
+    for call, read, fold in zip(calls[:-1], reads[:-1], folds, strict=True):
+        assert call == (
+            candidate,
+            fold.train,
+            tuple(cases[g.cluster_id].case_id for g in fold.train),
+            cases[fold.validation[0].cluster_id].as_of,
+        )
+        assert read == call[2]
+    assert calls[-1][1] == training.groups and reads[-1] == tuple(c.case_id for c in training.cases)
+    assert replays == [
+        ((cases[g.cluster_id].cluster.representative_source_item_id,), cases[g.cluster_id].as_of)
+        for f in folds
+        for g in f.validation
+    ]
+    audit = result._state.policy_audit
+    assert len(audit.observations) == 4 and audit.selected is not None
+    for row in audit.observations:
+        assert row.signal.action_priority is None
+        assert row.subfit_manifest.candidate == candidate
+        assert row.subfit_manifest.configuration_hash == content_hash(fitter.configuration)
+        assert row.subfit_manifest.maximum_evidence_available_at < row.as_of
+
+
+@pytest.mark.parametrize("delay", [timedelta(0), timedelta(hours=1)])
+def test_held_out_definition_must_precede_earliest_internal_training_group(tmp_path, delay):
+    from risk_engine.backtest.runtime import ProductionCandidateFitter
+    from risk_engine.backtest.runtime_inputs import RuntimeDefinition
+    from tests.backtest.runtime_fixtures import seal
+
+    original, candidate, training, backend = fitter_inputs(
+        tmp_path, count=4, policy_spec=policy_spec()
+    )
+    definition = seal(
+        RuntimeDefinition,
+        original.definition.model_dump(exclude={"content_hash"})
+        | {"frozen_at": training.groups[0].event_time + delay},
+        "content_hash",
+    )
+    candidate = candidate.model_copy(
+        update={
+            "parameters": candidate.parameters
+            | {"runtime_definition_sha256": definition.content_hash}
+        }
+    )
+    configuration = original.configuration.model_copy(
+        update={"frozen_at": definition.frozen_at, "candidates": (candidate,)}
+    )
+    fitter = ProductionCandidateFitter(
+        configuration=configuration,
+        definition=definition,
+        evidence_index=original.evidence_index,
+        model_locations=original.model_locations,
+        artifact_root=tmp_path / "not-created",
+        backend=backend,
+    )
+    with pytest.raises(ValueError, match="definition.*internal training"):
+        fitter.fit(candidate, training, as_of=training.cutoff)
+    assert backend.loads == 0
+    assert not (tmp_path / "not-created").exists()
+
+
+def test_policy_records_insufficient_subfit_as_fold_exclusion(tmp_path, monkeypatch):
+    from risk_engine.backtest.runtime import InsufficientCalibrationEvidence
+
+    fitter, candidate, training, _ = fitter_inputs(tmp_path, count=5, policy_spec=policy_spec())
+    original = fitter._fit_core
+
+    def one_insufficient(chosen, partition, *, as_of, **kwargs):
+        if partition.groups == training.groups[:2]:
+            raise InsufficientCalibrationEvidence("Confidence needs both joint correctness classes")
+        return original(chosen, partition, as_of=as_of, **kwargs)
+
+    monkeypatch.setattr(fitter, "_fit_core", one_insufficient)
+    result = fitter.fit(candidate, training, as_of=training.cutoff)
+    audit = result._state.policy_audit
+    assert len(audit.folds) == 3 and len(audit.observations) == 2
+    (exclusion,) = audit.exclusions
+    assert exclusion.fold_id == audit.folds[0].fold_id
+    assert exclusion.case_id is exclusion.cluster_id is None
+    assert "both joint correctness classes" in exclusion.reason
+
+
+@pytest.mark.parametrize(
+    "message", ["label hash mismatch", "model snapshot mismatch", "optimizer failure"]
+)
+def test_policy_data_corruption_is_not_an_exclusion(tmp_path, monkeypatch, message):
+    fitter, candidate, training, _ = fitter_inputs(tmp_path, count=4, policy_spec=policy_spec())
+
+    def corrupt(*args, **kwargs):
+        raise ValueError(message)
+
+    monkeypatch.setattr(fitter, "_fit_core", corrupt)
+    with pytest.raises(ValueError, match=message):
+        fitter.fit(candidate, training, as_of=training.cutoff)
+
+
+def replace_policy_outcome(fitter, training, number, changes):
+    from risk_engine.backtest.module import ObservedOutcome, TrainingPartition
+    from risk_engine.backtest.runtime_inputs import RuntimeEvidenceIndex
+    from tests.backtest.runtime_fixtures import artifact, seal
+
+    old = training.outcomes[number - 1]
+    outcome = seal(
+        ObservedOutcome, old.model_dump(exclude={"evidence_hash"}) | changes, "evidence_hash"
+    )
+    outcomes = tuple(outcome if o.case_id == old.case_id else o for o in training.outcomes)
+    dataset_hash = content_hash(dict(cases=training.cases, outcomes=outcomes))
+    training = TrainingPartition.model_validate(
+        training.model_dump() | {"outcomes": outcomes, "dataset_hash": dataset_hash}
+    )
+    reference = next(r for r in fitter.evidence_index.cases if r.case_id == old.case_id)
+    path = Path(reference.artifact.path)
+    payload = json.loads(path.read_bytes())
+    payload["outcome_hash"] = content_hash(outcome)
+    from risk_engine.backtest.module import canonical_bytes
+
+    path.write_bytes(canonical_bytes(payload))
+    descriptor = artifact(path, reference.artifact.identity, reference.artifact.available_at)
+    refs = tuple(
+        r.model_copy(update={"artifact": descriptor}) if r.case_id == old.case_id else r
+        for r in fitter.evidence_index.cases
+    )
+    fitter.evidence_index = seal(
+        RuntimeEvidenceIndex,
+        fitter.evidence_index.model_dump(exclude={"content_hash"})
+        | {"dataset_hash": dataset_hash, "cases": refs},
+        "content_hash",
+    )
+    return training
+
+
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        (
+            {"material_event": None, "material_event_absence_reason": "independent label absent"},
+            "material-event",
+        ),
+        (
+            {"valuation": None, "valuation_absence_reason": "independent valuation absent"},
+            "valuation",
+        ),
+        (
+            {
+                "valuation": {
+                    "pnl": Decimal("-30"),
+                    "currency": "USD",
+                    "horizon_days": 1,
+                    "comparison_scope": "empty support",
+                    "baseline_market_hash": None,
+                    "position_ids": (),
+                    "gross_values": (),
+                }
+            },
+            "coverage",
+        ),
+    ],
+)
+def test_policy_missing_independent_support_is_explicit_case_exclusion(tmp_path, change, reason):
+    from risk_engine.backtest.module import RealizedValuation
+
+    fitter, candidate, training, _ = fitter_inputs(tmp_path, count=4, policy_spec=policy_spec())
+    if isinstance(change.get("valuation"), dict):
+        change = {
+            "valuation": RealizedValuation.model_validate(
+                change["valuation"]
+                | {"baseline_market_hash": content_hash(training.cases[2].market)}
+            )
+        }
+    training = replace_policy_outcome(fitter, training, 3, change)
+    result = fitter.fit(candidate, training, as_of=training.cutoff)
+    (excluded,) = result._state.policy_audit.exclusions
+    assert excluded.case_id == training.cases[2].case_id
+    assert excluded.cluster_id == training.groups[2].cluster_id
+    assert reason in excluded.reason
+    assert result.manifest.policy is None
+    assert result.manifest.policy_absence_reason == "insufficient eligible cases"
+
+
+def test_selected_policy_binds_full_refit_stable_hash_without_artifact_cycle(tmp_path):
+    fitter, candidate, training, _ = fitter_inputs(
+        tmp_path, count=12, policy_spec=policy_spec(train_groups=10)
+    )
+    result = fitter.fit(candidate, training, as_of=training.cutoff)
+    manifest, state = result.manifest, result._state
+    audit = state.policy_audit
+    assert manifest.policy is not None and audit.selected is not None
+    assert manifest.policy.stable_fit_hash == manifest.stable_fit_hash
+    assert manifest.policy.training_hash == training.membership_hash
+    assert (
+        manifest.policy.template.validation_evidence == "policy-audit-sha256:" + audit.content_hash
+    )
+    assert manifest.policy.template.evidence_hash != audit.content_hash
+    assert all(
+        row.subfit_manifest.stable_fit_hash != manifest.stable_fit_hash
+        for row in audit.observations
+    )
+    assert "manifest_hash" not in state.model_dump(exclude={"policy_audit"})
+    assert manifest.manifest_hash not in state.model_dump_json()
+    assert manifest.policy.template.development_start < manifest.policy.template.development_end
+    assert (
+        max(max(o.label_available_at, o.outcome_available_at) for o in audit.observations)
+        < manifest.policy.template.frozen_at
+    )
+    artifact = next(a for a in manifest.artifacts if a.identity == state.schema_version)
+    import hashlib
+
+    assert artifact.sha256 == hashlib.sha256(Path(artifact.path).read_bytes()).hexdigest()
+    assert manifest.manifest_hash == content_hash(manifest.model_dump(exclude={"manifest_hash"}))
+
+
+@pytest.mark.parametrize("condition", ["classes", "neutral"])
+def test_policy_actual_insufficient_prefix_retains_whole_validation_scope(
+    tmp_path, monkeypatch, condition
+):
+    import risk_engine.backtest.runtime as module
+    from risk_engine.backtest.module import canonical_bytes
+    from risk_engine.backtest.runtime_inputs import RuntimeEvidenceIndex
+    from tests.backtest.runtime_fixtures import artifact, seal
+
+    fitter, candidate, training, _ = fitter_inputs(
+        tmp_path, count=6, policy_spec=policy_spec(validation_groups=2)
+    )
+    first_ids = {c.cluster.items[0].source_item_id for c in training.cases[:2]}
+    if condition == "classes":
+        refs = []
+        for ref in fitter.evidence_index.cases:
+            if ref.case_id in {c.case_id for c in training.cases[:2]}:
+                path = Path(ref.artifact.path)
+                payload = json.loads(path.read_bytes())
+                for target in payload["targets"]:
+                    target["actual_entity_ids"] = ["entity:one"]
+                    target.pop("label_hash")
+                    target["label_hash"] = content_hash(target)
+                path.write_bytes(canonical_bytes(payload))
+                ref = ref.model_copy(
+                    update={
+                        "artifact": artifact(path, ref.artifact.identity, ref.artifact.available_at)
+                    }
+                )
+            refs.append(ref)
+        fitter.evidence_index = seal(
+            RuntimeEvidenceIndex,
+            fitter.evidence_index.model_dump(exclude={"content_hash"}) | {"cases": tuple(refs)},
+            "content_hash",
+        )
+    else:
+        original = module.interpret
+
+        def neutral(item, *args):
+            events = original(item, *args)
+            return (
+                [e.model_copy(update={"classification_confidence": 0.5}) for e in events]
+                if item.source_item_id in first_ids
+                else events
+            )
+
+        monkeypatch.setattr(module, "interpret", neutral)
+    result = fitter.fit(candidate, training, as_of=training.cutoff)
+    audit = result._state.policy_audit
+    assert len(audit.folds) == 2
+    assert audit.folds[0].validation == training.groups[2:4]
+    (omitted,) = audit.exclusions
+    assert omitted.fold_id == audit.folds[0].fold_id
+    assert omitted.case_id is omitted.cluster_id is None
+    assert (
+        "both joint correctness classes" if condition == "classes" else "all-neutral"
+    ) in omitted.reason
+    assert {o.cluster_id for o in audit.observations} == {g.cluster_id for g in training.groups[4:]}
+
+
+def test_policy_no_returned_signal_retains_case_exclusions(tmp_path, monkeypatch):
+    from risk_engine.risk.module import RiskEngine
+
+    fitter, candidate, training, _ = fitter_inputs(tmp_path, count=4, policy_spec=policy_spec())
+    monkeypatch.setattr(RiskEngine, "analyze", lambda *args, **kwargs: [])
+    result = fitter.fit(candidate, training, as_of=training.cutoff)
+    audit = result._state.policy_audit
+    assert audit.observations == () and len(audit.exclusions) == 2
+    assert {e.case_id for e in audit.exclusions} == {c.case_id for c in training.cases[2:]}
+    assert all("no signals" in e.reason for e in audit.exclusions)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("baseline_market_hash", "f" * 64),
+        ("currency", "INR"),
+        ("horizon_days", 2),
+        ("gross_values", (("equity", Decimal("900")),)),
+    ],
+)
+def test_policy_corrupt_independent_valuation_is_hard_error(tmp_path, field, value):
+    from risk_engine.backtest.module import RealizedValuation
+
+    fitter, candidate, training, _ = fitter_inputs(tmp_path, count=4, policy_spec=policy_spec())
+    valuation = RealizedValuation.model_validate(
+        training.outcomes[2].valuation.model_dump() | {field: value}
+    )
+    training = replace_policy_outcome(fitter, training, 3, {"valuation": valuation})
+    with pytest.raises(ValueError, match="valuation"):
+        fitter.fit(candidate, training, as_of=training.cutoff)
+
+
+def test_policy_missing_scenario_support_is_hard_error(tmp_path, monkeypatch):
+    from risk_engine.backtest.runtime import ProductionFittedRuntime
+
+    fitter, candidate, training, _ = fitter_inputs(tmp_path, count=4, policy_spec=policy_spec())
+
+    def no_support(*args, **kwargs):
+        raise ValueError("observed scenario support unavailable")
+
+    monkeypatch.setattr(ProductionFittedRuntime, "scenarios", no_support)
+    with pytest.raises(ValueError, match="observed scenario support"):
+        fitter.fit(candidate, training, as_of=training.cutoff)
+
+
+def test_missing_support_does_not_hide_invalid_policy_outcome_chronology(tmp_path):
+    fitter, candidate, training, _ = fitter_inputs(tmp_path, count=4, policy_spec=policy_spec())
+    training = replace_policy_outcome(
+        fitter,
+        training,
+        3,
+        {
+            "label_available_at": training.cases[2].as_of,
+            "valuation": None,
+            "valuation_absence_reason": "absent simulation valuation",
+        },
+    )
+    # Keep independently hashed clause availability consistent with the outcome:
+    # only the policy replay-before-label requirement is violated.
+    from risk_engine.backtest.module import canonical_bytes
+    from risk_engine.backtest.runtime_inputs import RuntimeEvidenceIndex
+    from tests.backtest.runtime_fixtures import artifact, seal
+
+    refs = []
+    for ref in fitter.evidence_index.cases:
+        if ref.case_id == training.cases[2].case_id:
+            path = Path(ref.artifact.path)
+            payload = json.loads(path.read_bytes())
+            for target in payload["targets"]:
+                target["label_available_at"] = training.cases[2].as_of
+                target.pop("label_hash")
+                target["label_hash"] = content_hash(target)
+            path.write_bytes(canonical_bytes(payload))
+            ref = ref.model_copy(
+                update={
+                    "artifact": artifact(path, ref.artifact.identity, ref.artifact.available_at)
+                }
+            )
+        refs.append(ref)
+    fitter.evidence_index = seal(
+        RuntimeEvidenceIndex,
+        fitter.evidence_index.model_dump(exclude={"content_hash"}) | {"cases": tuple(refs)},
+        "content_hash",
+    )
+    with pytest.raises(ValueError, match="policy.*chronology"):
+        fitter.fit(candidate, training, as_of=training.cutoff)
+
+
+def test_outer_or_final_label_changes_do_not_change_fitted_numbers_or_policy(tmp_path, monkeypatch):
+    from risk_engine.backtest.module import (
+        BacktestDataset,
+        ObservedOutcome,
+        SnapshotReference,
+        TrainingPartition,
+    )
+    from risk_engine.backtest.runtime_inputs import RuntimeEvidenceIndex
+    from risk_engine.config import ClusteringConfig
+    from risk_engine.domain import EventClass
+    from tests.backtest.runtime_fixtures import TERMS, seal
+
+    fitter, candidate, entire, _ = fitter_inputs(
+        tmp_path, count=14, policy_spec=policy_spec(train_groups=10)
+    )
+    items = tuple(
+        sorted((i for c in entire.cases for i in c.cluster.items), key=lambda i: i.source_item_id)
+    )
+    snapshot = SnapshotReference(
+        snapshot_id="snapshot", content_hash=content_hash(items), source_terms=TERMS
+    )
+
+    def build_dataset(alter):
+        outcomes = []
+        for index, outcome in enumerate(entire.outcomes):
+            payload = outcome.model_dump(exclude={"evidence_hash"})
+            if alter and index >= 12:  # outer test and untouched final labels only
+                payload.update(
+                    actual_entity_id="entity:two",
+                    actual_event_class=EventClass.OTHER_UNCERTAIN,
+                    material_event=not outcome.material_event,
+                )
+            outcomes.append(seal(ObservedOutcome, payload, "evidence_hash"))
+        return seal(
+            BacktestDataset,
+            dict(
+                schema_version="backtest-dataset-v1",
+                snapshot_id="independently-rebuilt-contract-dataset",
+                evidence_kind="empirical",
+                provenance=TERMS[0],
+                source_terms=TERMS,
+                source_snapshots=(snapshot,),
+                clustering=ClusteringConfig(similarity_threshold=1, max_time_delta_hours=1),
+                cases=entire.cases,
+                outcomes=tuple(outcomes),
+            ),
+            "content_hash",
+        )
+
+    original_read = Path.read_bytes
+
+    def no_external_reads(path):
+        assert path.name not in {"case-13.json", "case-14.json"}
+        return original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", no_external_reads)
+    fits = []
+    datasets = [build_dataset(False), build_dataset(True)]
+    for dataset in datasets:
+        groups = entire.groups[:12]
+        partition = TrainingPartition.model_validate(
+            entire.model_dump()
+            | {
+                "groups": groups,
+                "membership_hash": content_hash(groups),
+                "cases": dataset.cases[:12],
+                "outcomes": dataset.outcomes[:12],
+                "dataset_hash": dataset.content_hash,
+                "snapshot_id": dataset.snapshot_id,
+                "cutoff": dataset.cases[12].as_of,
+            }
+        )
+        fitter.evidence_index = seal(
+            RuntimeEvidenceIndex,
+            fitter.evidence_index.model_dump(exclude={"content_hash"})
+            | {"dataset_hash": dataset.content_hash},
+            "content_hash",
+        )
+        fits.append(fitter.fit(candidate, partition, as_of=partition.cutoff))
+    left, right = fits
+    assert datasets[0].content_hash != datasets[1].content_hash
+    assert left.manifest.dataset_hash != right.manifest.dataset_hash
+    assert (
+        left._state.confidence_calibrator.temperature
+        == right._state.confidence_calibrator.temperature
+    )
+    assert left.manifest.impact.cutpoints == right.manifest.impact.cutpoints
+    assert (
+        left._state.impact_calibration.reference_basket
+        == right._state.impact_calibration.reference_basket
+    )
+    assert left._state.base_market == right._state.base_market
+    assert left._state.policy_audit.selected == right._state.policy_audit.selected
+    assert left._state.policy_audit.selected is not None
+    assert tuple(r.model_dump() for r in left._state.policy_audit.results) == tuple(
+        r.model_dump() for r in right._state.policy_audit.results
+    )
+    assert tuple(o.signal.confidence for o in left._state.policy_audit.observations) == tuple(
+        o.signal.confidence for o in right._state.policy_audit.observations
+    )
+
+
+@pytest.mark.parametrize("corruption", ["label", "model"])
+def test_policy_actual_corrupt_evidence_fails_fit(tmp_path, corruption):
+    from risk_engine.backtest.module import canonical_bytes
+    from risk_engine.backtest.runtime import InsufficientCalibrationEvidence
+    from risk_engine.backtest.runtime_inputs import RuntimeEvidenceIndex
+    from tests.backtest.runtime_fixtures import artifact, seal
+
+    fitter, candidate, training, _ = fitter_inputs(tmp_path, count=4, policy_spec=policy_spec())
+    if corruption == "model":
+        (fitter.model_locations.sentiment_snapshot / "model.safetensors").write_bytes(b"corrupt")
+    else:
+        refs = list(fitter.evidence_index.cases)
+        ref = refs[0]
+        path = Path(ref.artifact.path)
+        payload = json.loads(path.read_bytes())
+        payload["targets"][0]["label_hash"] = "f" * 64
+        path.write_bytes(canonical_bytes(payload))
+        refs[0] = ref.model_copy(
+            update={"artifact": artifact(path, ref.artifact.identity, ref.artifact.available_at)}
+        )
+        fitter.evidence_index = seal(
+            RuntimeEvidenceIndex,
+            fitter.evidence_index.model_dump(exclude={"content_hash"}) | {"cases": tuple(refs)},
+            "content_hash",
+        )
+    with pytest.raises(ValueError) as caught:
+        fitter.fit(candidate, training, as_of=training.cutoff)
+    assert not isinstance(caught.value, InsufficientCalibrationEvidence)
+
+
+def test_restore_rejects_policy_that_disagrees_with_retained_selected_audit(tmp_path):
+    from risk_engine.backtest.module import FittedManifest, PolicyEvidence
+    from tests.backtest.runtime_fixtures import seal
+
+    fitter, candidate, training, _ = fitter_inputs(
+        tmp_path, count=12, policy_spec=policy_spec(train_groups=10)
+    )
+    original = fitter.fit(candidate, training, as_of=training.cutoff)
+    policy_payload = original.manifest.policy.model_dump()
+    policy_payload["template"].pop("evidence_hash")
+    policy_payload["template"]["confidence_threshold"] = Decimal("0.2")
+    policy_payload["template"]["evidence_hash"] = content_hash(policy_payload)
+    other_policy = PolicyEvidence.model_validate(policy_payload)
+    payload = original.manifest.model_dump(exclude={"manifest_hash"}) | {"policy": other_policy}
+    changed = seal(FittedManifest, payload, "manifest_hash")
+    with pytest.raises(ValueError, match="policy.*audit"):
+        fitter.preflight_restore(changed)

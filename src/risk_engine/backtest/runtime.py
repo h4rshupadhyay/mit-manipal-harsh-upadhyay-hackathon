@@ -14,6 +14,8 @@ from risk_engine.backtest.module import (
     DevelopmentConfiguration,
     FittedManifest,
     ImpactFitIdentity,
+    PolicyEvidence,
+    PolicyTemplate,
     ReplayInput,
     ScenarioEvidence,
     TrainingPartition,
@@ -22,7 +24,14 @@ from risk_engine.backtest.module import (
     content_hash,
     decode_impact_audit,
 )
-from risk_engine.backtest.policy_selection import PolicySelectionAudit
+from risk_engine.backtest.policy_selection import (
+    PolicyExclusion,
+    PolicyObservation,
+    PolicySelectionAudit,
+    _policy_folds_from_groups,
+    policy_folds,
+    select_policy,
+)
 from risk_engine.backtest.runtime_inputs import (
     LocalModelLocations,
     RuntimeDefinition,
@@ -38,8 +47,10 @@ from risk_engine.backtest.runtime_state import (
     write_runtime_state,
 )
 from risk_engine.domain import (
+    AttributionDimension,
     FactorShock,
     InterpretedEvent,
+    PortfolioMateriality,
     ProvenanceMethod,
     RiskSignal,
     StressScenario,
@@ -177,6 +188,46 @@ def _model_identity(lock: ModelLock, catalogue_hash: str) -> ModelIdentity:
         event_model_version=f"{lock.event.model_id}@{lock.event.revision}",
         sentiment_model_version=f"{lock.sentiment.model_id}@{lock.sentiment.revision}",
         entity_linker_version=f"entity-matcher-v1:{catalogue_hash}",
+    )
+
+
+def _selected_policy(
+    audit: PolicySelectionAudit, manifest: FittedManifest
+) -> PolicyEvidence | None:
+    """Bind retained selection to the unchanged stable fit identity hash domain."""
+    if audit.selected is None:
+        return None
+    frozen_at = manifest.confidence.frozen_at
+    start = min(row.as_of for row in audit.observations)
+    end = max(max(row.label_available_at, row.outcome_available_at) for row in audit.observations)
+    if end >= frozen_at or any(row.as_of >= frozen_at for row in audit.observations):
+        raise ValueError("policy development evidence unavailable before full refit freeze")
+    template = dict(
+        version="production-policy-v1:" + audit.content_hash,
+        validation_status="chronologically_validated",
+        evidence_kind="empirical",
+        selection_protocol="nested_chronological_development",
+        development_start=start,
+        development_end=end,
+        frozen_at=frozen_at,
+        validation_evidence="policy-audit-sha256:" + audit.content_hash,
+        snapshot_id=manifest.confidence.calibration_evidence_snapshot_id,
+        source_terms="; ".join(sorted(set((*manifest.source_terms, *audit.source_terms)))),
+        **audit.selected.model_dump(),
+    )
+    payload = dict(
+        schema_version="backtest-policy-binding-v1",
+        candidate_hash=content_hash(manifest.candidate),
+        dataset_hash=manifest.dataset_hash,
+        training_hash=manifest.training_hash,
+        stable_fit_hash=manifest.stable_fit_hash,
+        template=template,
+    )
+    # The audit hash identifies validation_evidence; evidence_hash authenticates
+    # the complete existing PolicyEvidence domain, including the full refit.
+    template["evidence_hash"] = content_hash(payload)
+    return PolicyEvidence.model_validate(
+        payload | {"template": PolicyTemplate.model_validate(template)}
     )
 
 
@@ -522,12 +573,31 @@ class ProductionCandidateFitter:
             != locked.impact
         ):
             raise ValueError("locked Impact calibration/cutpoints differ from recomputed valuation")
-        if (
-            locked.policy is None
-            and state.policy_audit is not None
-            and state.policy_audit.selected is not None
+        if state.policy_audit is None:
+            if locked.policy is not None or resolved.policy_mode != "unselected":
+                raise ValueError("locked held-out policy requires frozen audit")
+        elif (
+            resolved.policy_mode != "held-out-material-event-f1-v1"
+            or state.policy_audit.spec != self.definition.policy_selection
+            or state.policy_audit.folds
+            != _policy_folds_from_groups(
+                locked.training_groups,
+                state.policy_audit.spec,
+                embargo=self.configuration.split.embargo,
+            )
+            or any(
+                row.subfit_manifest.candidate != locked.candidate
+                or row.subfit_manifest.dataset_hash != locked.dataset_hash
+                for row in state.policy_audit.observations
+            )
+            or any(
+                g not in locked.training_groups
+                for f in state.policy_audit.folds
+                for g in f.train + f.embargo + f.validation
+            )
+            or _selected_policy(state.policy_audit, locked) != locked.policy
         ):
-            raise ValueError("locked policy absent despite selected frozen audit")
+            raise ValueError("locked policy differs from selected frozen audit")
         return locked, state, matcher, models
 
     def preflight_restore(self, locked: FittedManifest) -> None:
@@ -546,10 +616,193 @@ class ProductionCandidateFitter:
     def fit(
         self, candidate: CandidateSpec, training: TrainingPartition, *, as_of: datetime
     ) -> ProductionFittedRuntime:
+        training = TrainingPartition.model_validate(training.model_dump(mode="python"))
+        candidate = CandidateSpec.model_validate(candidate.model_dump(mode="python"))
         resolved = resolve_candidate(candidate, self.definition)
-        if resolved.policy_mode != "unselected":
-            raise ValueError("held-out policy fitting requires Task 4 selection integration")
-        return self._fit_core(candidate, training, as_of=as_of)
+        if as_of.utcoffset() is None or as_of != training.cutoff:
+            raise ValueError("fit as_of must equal partition cutoff")
+        if candidate not in self.configuration.candidates:
+            raise ValueError("candidate not declared in configuration")
+        if training.evidence_kind != "empirical" or self.evidence_index is None:
+            raise ValueError("production fitting requires empirical training evidence/index")
+        if resolved.policy_mode == "unselected":
+            return self._fit_core(candidate, training, as_of=as_of)
+        spec = self.definition.policy_selection
+        assert spec is not None  # resolve_candidate rejects absent held-out specification.
+        folds = policy_folds(training, spec, embargo=self.configuration.split.embargo)
+        if folds and self.definition.frozen_at >= folds[0].train[0].event_time:
+            raise ValueError("runtime definition must precede earliest internal training group")
+        cases = {case.cluster.cluster_id: case for case in training.cases}
+        outcomes = {outcome.case_id: outcome for outcome in training.outcomes}
+        observations: list[PolicyObservation] = []
+        exclusions: list[PolicyExclusion] = []
+        for fold in folds:
+            prefix_cases = tuple(cases[group.cluster_id] for group in fold.train)
+            cutoff = cases[fold.validation[0].cluster_id].as_of
+            prefix = TrainingPartition(
+                groups=fold.train,
+                cases=prefix_cases,
+                outcomes=tuple(outcomes[case.case_id] for case in prefix_cases),
+                cutoff=cutoff,
+                snapshot_id=training.snapshot_id,
+                dataset_hash=training.dataset_hash,
+                evidence_kind=training.evidence_kind,
+                source_terms=training.source_terms,
+                membership_hash=content_hash(fold.train),
+            )
+            try:
+                runtime = self._fit_core(candidate, prefix, as_of=cutoff)
+            except InsufficientCalibrationEvidence as error:
+                exclusions.append(
+                    PolicyExclusion(
+                        fold_id=fold.fold_id,
+                        case_id=None,
+                        cluster_id=None,
+                        reason="insufficient prefix calibration: " + str(error),
+                        source_terms=training.source_terms,
+                    )
+                )
+                continue
+            for group in fold.validation:
+                case = cases[group.cluster_id]
+                outcome = outcomes[case.case_id]
+                if min(outcome.label_available_at, outcome.outcome_available_at) <= case.as_of:
+                    raise ValueError(
+                        "policy outcome chronology requires replay before labels/outcomes"
+                    )
+                terms = tuple(
+                    sorted(
+                        set(
+                            (
+                                *training.source_terms,
+                                *outcome.source_terms,
+                                *runtime.manifest.source_terms,
+                                *runtime.manifest.confidence.source_terms,
+                            )
+                        )
+                    )
+                )
+
+                def exclude(
+                    reason: str,
+                    *,
+                    fold_id: str = fold.fold_id,
+                    case_id: str = case.case_id,
+                    cluster_id: str = group.cluster_id,
+                    source_terms: tuple[str, ...] = terms,
+                ) -> None:
+                    exclusions.append(
+                        PolicyExclusion(
+                            fold_id=fold_id,
+                            case_id=case_id,
+                            cluster_id=cluster_id,
+                            reason=reason,
+                            source_terms=source_terms,
+                        )
+                    )
+
+                representative = next(
+                    item
+                    for item in case.cluster.items
+                    if item.source_item_id == case.cluster.representative_source_item_id
+                )
+                signals = runtime.risk_engine.analyze((representative,), case.as_of)
+                if not signals:
+                    exclude("production Risk Engine returned no signals")
+                    continue
+                chosen = min(signals, key=lambda signal: (-signal.confidence, signal.signal_id))
+                _verify_calibration(chosen, runtime.manifest, case.as_of)
+                if outcome.material_event is None:
+                    exclude(
+                        "independent material-event label absent: "
+                        + str(outcome.material_event_absence_reason)
+                    )
+                    continue
+                valuation = outcome.valuation
+                if valuation is None:
+                    exclude(
+                        "independent observed valuation absent: "
+                        + str(outcome.valuation_absence_reason)
+                    )
+                    continue
+                scenario = runtime.scenarios(chosen, case, as_of=case.as_of)
+                if (
+                    scenario.fit_hash != runtime.manifest.manifest_hash
+                    or scenario.calibration_hash != runtime.manifest.impact.calibration_hash
+                    or scenario.available_at > case.as_of
+                    or scenario.scenario.calibration_version != chosen.impact.calibration_version
+                ):
+                    raise ValueError("policy scenario fit/calibration/as_of mismatch")
+                stress = StressEngine().run(case.portfolio, case.market, scenario.scenario)
+                gross = tuple(
+                    sorted((p.position_id, abs(p.notional)) for p in case.portfolio.positions)
+                )
+                ids = tuple(identity for identity, _ in gross)
+                if (
+                    valuation.baseline_market_hash != content_hash(case.market)
+                    or valuation.currency != stress.valuation_currency
+                    or valuation.horizon_days != runtime.manifest.impact.horizon_days
+                ):
+                    raise ValueError("observed valuation baseline/currency/horizon mismatch")
+                if any(identity not in ids for identity in valuation.position_ids) or any(
+                    dict(gross).get(identity) != value for identity, value in valuation.gross_values
+                ):
+                    raise ValueError(
+                        "observed valuation scope/gross values differ from actual portfolio"
+                    )
+                assets = tuple(
+                    sorted(
+                        a.label
+                        for a in stress.attribution
+                        if a.dimension == AttributionDimension.ASSET
+                    )
+                )
+                if (
+                    valuation.position_ids != ids
+                    or valuation.gross_values != gross
+                    or stress.valuation_coverage != 1
+                    or stress.unsupported_position_ids
+                    or assets != ids
+                    or not any(value > 0 for _, value in gross)
+                ):
+                    exclude("incomplete independent observed or supported valuation coverage")
+                    continue
+                materiality = PortfolioMateriality(
+                    absolute_loss=max(Decimal(0), stress.absolute_loss),
+                    percentage_loss=max(0, stress.percentage_loss),
+                    currency=stress.valuation_currency,
+                )
+                observations.append(
+                    PolicyObservation(
+                        fold_id=fold.fold_id,
+                        case_id=case.case_id,
+                        cluster_id=group.cluster_id,
+                        as_of=case.as_of,
+                        subfit_manifest=runtime.manifest,
+                        signal=chosen,
+                        stress=stress,
+                        materiality=materiality,
+                        material_event=outcome.material_event,
+                        outcome_hash=content_hash(outcome),
+                        label_available_at=outcome.label_available_at,
+                        outcome_available_at=outcome.outcome_available_at,
+                        source_terms=terms,
+                        observed=outcome,
+                        market_hash=content_hash(case.market),
+                        portfolio_id=case.portfolio.portfolio_id,
+                        portfolio_gross_values=gross,
+                    )
+                )
+        audit = select_policy(
+            tuple(observations),
+            tuple(exclusions),
+            spec,
+            folds=folds,
+            parent_training_hash=training.membership_hash,
+            runtime_definition_hash=self.definition.content_hash,
+            configuration_hash=self._configuration_hash,
+        )
+        return self._fit_core(candidate, training, as_of=as_of, policy_audit=audit)
 
     def _fit_core(
         self,
@@ -707,8 +960,20 @@ class ProductionCandidateFitter:
             policy_absence_reason=reason,
         )
         manifest = FittedManifest.model_validate(
-            {**manifest_payload, "manifest_hash": content_hash(manifest_payload)}
+            {
+                **manifest_payload,
+                "policy_absence_reason": reason or "full refit awaiting audit binding",
+                "manifest_hash": content_hash(
+                    manifest_payload
+                    | {"policy_absence_reason": reason or "full refit awaiting audit binding"}
+                ),
+            }
         )
+        if policy_audit is not None:
+            manifest_payload["policy"] = _selected_policy(policy_audit, manifest)
+            manifest = FittedManifest.model_validate(
+                {**manifest_payload, "manifest_hash": content_hash(manifest_payload)}
+            )
         return ProductionFittedRuntime(
             manifest=manifest,
             state=state,

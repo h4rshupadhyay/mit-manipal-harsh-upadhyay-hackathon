@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import timedelta
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 from risk_engine.backtest.module import (
     LocalArtifact,
     ObservedOutcome,
+    RealizedValuation,
     ReplayInput,
     SnapshotReference,
     TrainingPartition,
@@ -247,7 +249,11 @@ def model_and_catalogue_artifacts(directory: Path) -> tuple[LocalArtifact, Local
 
 
 def production_inputs(
-    directory: Path, count: int = 3, texts=None, construction=BasketConstruction.EQUAL_NOTIONAL
+    directory: Path,
+    count: int = 3,
+    texts=None,
+    construction=BasketConstruction.EQUAL_NOTIONAL,
+    policy_spec=None,
 ):
     """Independently assemble contract cases; never convert a synthetic dataset."""
     from risk_engine.backtest.module import CandidateSpec, DevelopmentConfiguration
@@ -291,6 +297,11 @@ def production_inputs(
         artifact(lock_path, "model-lock"), artifact(catalogue_path, "catalogue")
     )
     payload["baskets"][0]["spec"] = spec(construction)
+    payload["policy_selection"] = policy_spec
+    if policy_spec:
+        payload["matching"][0]["config"] = config().model_copy(
+            update={"minimum_support": 1, "nearest_neighbors": 1}
+        )
     definition = seal(RuntimeDefinition, payload, "content_hash")
     cases, outcomes, descriptors = [], [], []
     for number in range(1, count + 1):
@@ -304,11 +315,56 @@ def production_inputs(
                 "content_hash": hashlib.sha256(text.encode()).hexdigest(),
             }
         )
+        shift = timedelta(days=7 * (number - 1)) if policy_spec else timedelta(0)
+        if policy_spec:
+            item = item.model_copy(
+                update={
+                    "published_at": item.published_at + shift,
+                    "retrieved_at": item.retrieved_at + shift,
+                }
+            )
         cluster = cluster_stories(
             (item,), ClusteringConfig(similarity_threshold=1, max_time_delta_hours=1)
         )[0]
-        case = ReplayInput.model_validate({**case.model_dump(), "cluster": cluster})
-        analogue = observed_vector(cluster.cluster_id, number * 10)
+        case = ReplayInput.model_validate(
+            {**case.model_dump(), "cluster": cluster, "as_of": case.as_of + shift}
+        )
+        analogue = observed_vector(
+            cluster.cluster_id,
+            100 - int(cluster.cluster_id.removeprefix("story-")[:8], 16) / 2**32 * 90
+            if policy_spec
+            else number * 10,
+        )
+        if policy_spec:
+            # Shift the whole observed-vector contract together, including session dates.
+            # These independent fixtures remain explicitly project-authored simulations.
+            def shifted(value, delta=shift):
+                if isinstance(value, datetime | date):
+                    return value + delta
+                if isinstance(value, dict):
+                    return {key: shifted(entry, delta) for key, entry in value.items()}
+                if isinstance(value, tuple | list):
+                    return tuple(shifted(entry, delta) for entry in value)
+                return value
+
+            analogue = type(analogue).model_validate(shifted(analogue.model_dump()))
+            outcome_payload = outcome.model_dump(exclude={"evidence_hash"}) | {
+                "label_available_at": outcome.label_available_at + shift,
+                "outcome_available_at": outcome.outcome_available_at + shift,
+                "material_event": number % 2 == 1,
+                "material_event_absence_reason": None,
+                "valuation_absence_reason": None,
+                "valuation": RealizedValuation(
+                    pnl=Decimal(-number * 10),
+                    currency="USD",
+                    horizon_days=1,
+                    comparison_scope="complete project-authored simulation portfolio",
+                    baseline_market_hash=content_hash(case.market),
+                    position_ids=("equity",),
+                    gross_values=(("equity", Decimal("1000")),),
+                ),
+            }
+            outcome = seal(ObservedOutcome, outcome_payload, "evidence_hash")
         payload = evidence_payload(case, outcome, analogue)
         # Independent clause identities use published segmentation offsets, not inference labels.
         import json
@@ -324,11 +380,13 @@ def production_inputs(
                 separators=(",", ":"),
             )
             target["event_id"] = "event:" + hashlib.sha256(identity.encode()).hexdigest()
-            target["actual_entity_ids"] = ("entity:one",) if number != 2 else ()
+            correct = number % 2 == 1 if policy_spec else number != 2
+            target["actual_entity_ids"] = ("entity:one",) if correct else ()
             target["label_hash"] = content_hash(target)
             targets.append(target)
         payload["targets"] = tuple(targets)
         descriptor = write_document(directory / f"{case.case_id}.json", payload)
+        descriptor = descriptor.model_copy(update={"available_at": descriptor.available_at + shift})
         descriptors.append(
             dict(case_id=case.case_id, cluster_id=cluster.cluster_id, artifact=descriptor)
         )
@@ -346,7 +404,7 @@ def production_inputs(
         groups=groups,
         cases=tuple(cases),
         outcomes=tuple(outcomes),
-        cutoff=PAST + timedelta(days=1),
+        cutoff=PAST + timedelta(days=7 * count + 1 if policy_spec else 1),
         snapshot_id="independent-contract-simulation",
         dataset_hash=content_hash(dict(cases=cases, outcomes=outcomes)),
         evidence_kind="empirical",
@@ -372,7 +430,7 @@ def production_inputs(
             confidence_fit="binary-temperature-logit-clip1e-12-v1",
             cutpoint_rule="nearest-rank-lower-ties",
             scenario_choice="nearest-median-reference-loss-event-id-v1",
-            policy_mode="unselected",
+            policy_mode="held-out-material-event-f1-v1" if policy_spec else "unselected",
         ),
         complexity_dimensions=("rules",),
         complexity=(1,),

@@ -731,3 +731,95 @@ def test_rehashed_policy_audit_rejects_inconsistent_nonalerting_impact(tmp_path,
     payload["content_hash"] = content_hash(payload)
     with pytest.raises(ValidationError, match="Impact"):
         PolicySelectionAudit.model_validate(payload)
+
+
+def _fold_training(count=8, times=None):
+    from datetime import timezone
+
+    from risk_engine.backtest.module import TrainingPartition
+    from tests.backtest.runtime_fixtures import training_pair
+
+    base, _ = training_pair()
+    cases, outcomes = [], []
+    for n in range(count):
+        case, outcome, _ = simulated_case(n + 1)
+        instant = times[n] if times else case.cluster.event_time + timedelta(days=n)
+        item = case.cluster.items[0].model_copy(
+            update={"published_at": instant, "retrieved_at": instant + timedelta(hours=1)}
+        )
+        cluster = case.cluster.model_copy(update={"event_time": instant, "items": (item,)})
+        case = case.model_copy(update={"cluster": cluster, "as_of": instant + timedelta(hours=2)})
+        cases.append(case)
+        outcomes.append(outcome)
+    # Membership canonical ordering uses UTC instant then cluster ID.
+    cases.sort(key=lambda c: (c.cluster.event_time.astimezone(timezone.utc), c.cluster.cluster_id))
+    groups = tuple(
+        FoldGroup(
+            cluster_id=c.cluster.cluster_id,
+            event_time=c.cluster.event_time,
+            source_item_ids=c.cluster.source_item_ids,
+        )
+        for c in cases
+    )
+    return TrainingPartition.model_validate(
+        base.model_dump()
+        | {
+            "cases": tuple(cases),
+            "outcomes": tuple(outcomes),
+            "groups": groups,
+            "membership_hash": content_hash(groups),
+            "cutoff": base.cutoff + timedelta(days=count + 1),
+        }
+    )
+
+
+def test_policy_folds_use_last_eligible_groups_and_disjoint_validation():
+    training = _fold_training()
+    spec = _spec(train_groups=2, validation_groups=2)
+    folds = policy_selection.policy_folds(training, spec, embargo=timedelta(days=2))
+    assert tuple(f.fold_id for f in folds) == ("policy-inner-0001", "policy-inner-0002")
+    assert tuple((f.train, f.embargo, f.validation) for f in folds) == (
+        (training.groups[:2], training.groups[2:3], training.groups[3:5]),
+        (training.groups[2:4], training.groups[4:5], training.groups[5:7]),
+    )
+    assert not policy_selection.policy_folds(_fold_training(3), spec, embargo=timedelta(days=2))
+
+
+def test_policy_folds_normalize_timezones_and_revalidate_naive_records():
+    from datetime import timezone
+
+    training = _fold_training()
+    zones = [
+        g.event_time.astimezone(timezone(timedelta(hours=5, minutes=30))) for g in training.groups
+    ]
+    shifted = _fold_training(times=zones)
+    folds = policy_selection.policy_folds(
+        shifted, _spec(train_groups=2, validation_groups=2), embargo=timedelta(days=2)
+    )
+    assert all(
+        g.event_time.utcoffset() == timedelta(0) for f in folds for g in f.train + f.validation
+    )
+    bad = training.groups[0].model_copy(
+        update={"event_time": training.groups[0].event_time.replace(tzinfo=None)}
+    )
+    with pytest.raises(ValueError):
+        policy_selection.policy_folds(
+            training.model_copy(update={"groups": (bad, *training.groups[1:])}),
+            _spec(train_groups=2, validation_groups=2),
+            embargo=timedelta(days=2),
+        )
+    with pytest.raises(ValueError):
+        policy_selection.policy_folds(training, _spec(), embargo=timedelta(0))
+
+
+def test_policy_folds_repeated_times_keep_canonical_order():
+    from tests.impact.test_analogues import PAST
+
+    training = _fold_training(times=[PAST + timedelta(days=n // 2) for n in range(8)])
+    folds = policy_selection.policy_folds(
+        training, _spec(train_groups=2, validation_groups=2), embargo=timedelta(days=1)
+    )
+    assert folds[0].train == training.groups[:2]
+    assert folds[0].validation == training.groups[2:4]
+    assert folds[1].train == training.groups[2:4]
+    assert folds[1].validation == training.groups[4:6]
