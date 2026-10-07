@@ -1,12 +1,125 @@
+import unicodedata
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from risk_engine.domain import EventClass, InterpretedEvent
-from risk_engine.nlp.entity_matcher import EntityMatcher
+from risk_engine.nlp.entity_matcher import EntityMatcher, _normalize
 
 CATALOGUE = Path(__file__).parents[1] / "fixtures" / "entity-catalog.csv"
+
+
+@pytest.mark.parametrize("name", ["Café", "Cafe\u0301"])
+@pytest.mark.parametrize("text", ["Café", "Cafe\u0301"])
+def test_canonical_unicode_names_match_with_verbatim_evidence(
+    tmp_path: Path, name: str, text: str
+) -> None:
+    catalogue = tmp_path / "unicode.csv"
+    catalogue.write_text(
+        f"entity_id,canonical_name,aliases,identifiers,tickers\ne1,{name},,,\n",
+        encoding="utf-8",
+    )
+    links = EntityMatcher(catalogue).match(text)
+    assert len(links) == 1
+    assert links[0].entity_id == "e1"
+    assert links[0].canonical_name == name
+    assert links[0].evidence == text
+    assert links[0].candidate_entity_ids == ("e1",)
+    assert not links[0].ambiguous
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        ("À\u0315", "a\u0315\u0300"),
+        ("\u0300\u0315", "\u0315\u0300"),
+        ("각", "\u1100\u1161\u11a8"),
+        ("\u1100\u1161\u11a8", "각"),
+        ("ffi", "\ufb03"),
+        ("strasse", "Straße"),
+    ],
+)
+def test_unicode_composition_and_expansion_keep_all_source_contributors(
+    tmp_path: Path, name: str, text: str
+) -> None:
+    catalogue = tmp_path / "unicode.csv"
+    catalogue.write_text(
+        f"entity_id,canonical_name,aliases,identifiers,tickers\ne1,{name},,,\n",
+        encoding="utf-8",
+    )
+    links = EntityMatcher(catalogue).match(text)
+    assert [(link.entity_id, link.evidence) for link in links] == [("e1", text)]
+
+
+def test_reordered_nonstarter_mentions_follow_original_source_order(tmp_path: Path) -> None:
+    catalogue = tmp_path / "marks.csv"
+    catalogue.write_text(
+        "entity_id,canonical_name,aliases,identifiers,tickers\n"
+        "e1,\u0315,,,\ne2,\u0300,,,\n",
+        encoding="utf-8",
+    )
+    matcher = EntityMatcher(catalogue)
+    links = matcher.match("\u0315\u0300")
+    assert [(link.entity_id, link.evidence) for link in links] == [
+        ("e1", "\u0315"),
+        ("e2", "\u0300"),
+    ]
+    assert links == matcher.match("\u0315\u0300")
+
+
+def test_unicode_repeated_overlapping_and_ambiguous_mentions_stay_deterministic(
+    tmp_path: Path,
+) -> None:
+    catalogue = tmp_path / "overlap.csv"
+    catalogue.write_text(
+        "entity_id,canonical_name,aliases,identifiers,tickers\n"
+        "e1,Café Group,Café,,\ne2,Cafe\u0301,,,\n",
+        encoding="utf-8",
+    )
+    matcher = EntityMatcher(catalogue)
+    text = "Cafe\u0301 Group; Café; Cafe\u0301 Group"
+    links = matcher.match(text)
+    assert [link.evidence for link in links] == ["Cafe\u0301 Group", "Café", "Cafe\u0301 Group"]
+    assert [link.entity_id for link in (links[0], links[2])] == ["e1", "e1"]
+    assert [link.ambiguous for link in links] == [False, True, False]
+    assert links[1].candidate_entity_ids == ("e1", "e2")
+    assert links[1].confidence == 0
+    assert links == matcher.match(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "Café",
+        "Cafe\u0301",
+        "a\u0315\u0300",
+        "\u0315\u0300",
+        "\u1100\u1161\u11a8",
+        "\uac00\u11a8",
+        "\ufb03 Straße",
+        "\uff21\uff4c\uff50\uff48\uff41 Bank",
+        " \t Alpha\n\u00a0Bank \r ",
+        "\u00a8\u0301",
+        "\u212b\u0327",
+        "A\u0305\u0301",
+        "A\u0301\u0305",
+        "\u0130\u01f0",
+    ],
+)
+def test_normalized_text_matches_full_string_unicode_reference(text: str) -> None:
+    normalized, offsets = _normalize(text)
+    reference = unicodedata.normalize("NFKC", text).casefold()
+    # Split/join collapses whitespace; preserve the matcher's outer-space convention.
+    expected = " ".join(reference.split())
+    if reference and reference[0].isspace():
+        expected = " " + expected
+    if reference and reference[-1].isspace() and expected != " ":
+        expected += " "
+    assert normalized == expected
+    assert len(offsets) == len(normalized)
+    assert all(0 <= start < end <= len(text) for start, end in offsets)
 
 
 @pytest.mark.parametrize(
@@ -104,6 +217,27 @@ def test_unknown_organization_names_remain_visible_and_block_automatic_stress(te
             evidence=(text,),
             eligible_for_automatic_stress=True,
         )
+
+
+@pytest.mark.parametrize(
+    ("text", "entity_id"),
+    [
+        ("Unlisted Inc\u0327", "unknown:unlisted inç"),
+        ("Unlisted Bank\u0301", "unknown:unlisted banḱ"),
+        ("Unlisted Ltd\u0327", "unknown:unlisted ltḑ"),
+    ],
+)
+def test_unknown_organization_evidence_includes_composed_suffix_contributors(
+    text: str, entity_id: str
+) -> None:
+    links = EntityMatcher(CATALOGUE).match(text)
+    assert len(links) == 1
+    assert links[0].evidence == text
+    assert links[0].entity_id == entity_id
+    assert links[0].canonical_name == text
+    assert links[0].ambiguous
+    assert links[0].candidate_entity_ids == ()
+    assert links[0].confidence == 0
 
 
 def test_unknown_prose_mentions_follow_source_order_alongside_catalogue_links() -> None:

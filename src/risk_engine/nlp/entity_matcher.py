@@ -12,18 +12,59 @@ from risk_engine.domain import EntityLink
 
 def _normalize(text: str) -> tuple[str, list[tuple[int, int]]]:
     """Normalize matching text while retaining offsets into the original evidence."""
-    characters: list[str] = []
-    offsets: list[tuple[int, int]] = []
+    decomposed: list[tuple[str, tuple[int, int]]] = []
     for index, character in enumerate(text):
-        for normalized in unicodedata.normalize("NFKC", character).casefold():
-            if normalized.isspace():
-                if characters and characters[-1] == " ":
-                    offsets[-1] = (offsets[-1][0], index + 1)
+        decomposed.extend(
+            (part, (index, index + 1)) for part in unicodedata.normalize("NFKD", character)
+        )
+
+    # Reorder each combining run stably, including an initial nonstarter run.
+    ordered: list[tuple[str, tuple[int, int]]] = []
+    run: list[tuple[str, tuple[int, int]]] = []
+    for token in decomposed:
+        if unicodedata.combining(token[0]) == 0:
+            ordered.extend(sorted(run, key=lambda item: unicodedata.combining(item[0])))
+            run = []
+            ordered.append(token)
+        else:
+            run.append(token)
+    ordered.extend(sorted(run, key=lambda item: unicodedata.combining(item[0])))
+
+    composed: list[tuple[str, tuple[int, int]]] = []
+    starter: int | None = None
+    last_class = 0
+    for character, span in ordered:
+        combining_class = unicodedata.combining(character)
+        if starter is not None and (last_class < combining_class or last_class == 0):
+            # A fixed-size pair consults Unicode exclusions and Hangul composition.
+            pair = unicodedata.normalize("NFC", composed[starter][0] + character)
+            if len(pair) == 1:
+                previous = composed[starter][1]
+                composed[starter] = (
+                    pair,
+                    (min(previous[0], span[0]), max(previous[1], span[1])),
+                )
+                # Consumed characters do not advance the blocking class.
+                continue
+        composed.append((character, span))
+        if combining_class == 0:
+            starter = len(composed) - 1
+        last_class = combining_class
+
+    result: list[tuple[str, tuple[int, int]]] = []
+    for character, span in composed:
+        for folded in character.casefold():
+            if folded.isspace():
+                folded = " "
+                if result and result[-1][0] == " ":
+                    previous = result[-1][1]
+                    result[-1] = (
+                        " ",
+                        (min(previous[0], span[0]), max(previous[1], span[1])),
+                    )
                     continue
-                normalized = " "
-            characters.append(normalized)
-            offsets.append((index, index + 1))
-    return "".join(characters), offsets
+            result.append((folded, span))
+    return "".join(character for character, _ in result), [span for _, span in result]
 
 
 class EntityMatcher:
@@ -88,7 +129,7 @@ class EntityMatcher:
             indices = [
                 index
                 for index, (start, end) in enumerate(offsets)
-                if match.start() <= start and end <= match.end()
+                if start < match.end() and match.start() < end
             ]
             span = (indices[0], indices[-1] + 1)
             if any(
@@ -98,7 +139,7 @@ class EntityMatcher:
                 continue
             mentions.setdefault(span, set())
 
-        links: list[EntityLink] = []
+        links: list[tuple[int, int, EntityLink]] = []
         previous_end = -1
         for (start, end), entity_ids in sorted(
             mentions.items(), key=lambda mention: (mention[0][0], -mention[0][1])
@@ -106,7 +147,11 @@ class EntityMatcher:
             if start < previous_end:
                 continue
             previous_end = end
-            evidence = text[offsets[start][0] : offsets[end - 1][1]]
+            # Canonical ordering can make offsets nonmonotonic within a mention.
+            matched_offsets = offsets[start:end]
+            source_start = min(span_start for span_start, _ in matched_offsets)
+            source_end = max(span_end for _, span_end in matched_offsets)
+            evidence = text[source_start:source_end]
             candidates = tuple(sorted(entity_ids))
             if len(candidates) == 1:
                 entity_id = candidates[0]
@@ -116,13 +161,17 @@ class EntityMatcher:
                 entity_id = ("ambiguous:" if candidates else "unknown:") + term
                 name = evidence
             links.append(
-                EntityLink(
-                    entity_id=entity_id,
-                    canonical_name=name,
-                    confidence=1.0 if len(candidates) == 1 else 0.0,
-                    evidence=evidence,
-                    ambiguous=len(candidates) != 1,
-                    candidate_entity_ids=candidates,
+                (
+                    source_start,
+                    source_end,
+                    EntityLink(
+                        entity_id=entity_id,
+                        canonical_name=name,
+                        confidence=1.0 if len(candidates) == 1 else 0.0,
+                        evidence=evidence,
+                        ambiguous=len(candidates) != 1,
+                        candidate_entity_ids=candidates,
+                    ),
                 )
             )
-        return links
+        return [link for _, _, link in sorted(links, key=lambda item: (item[0], -item[1]))]
