@@ -33,7 +33,6 @@ from risk_engine.impact.analogues import AnalogueRepository, HistoricalAnalogue
 from risk_engine.impact.reference_basket import (
     ALLOCATION_ARITHMETIC_VERSION,
     BasketConstruction,
-    _equal_risk_weights,
     reference_allocation_context,
 )
 from risk_engine.stress.interfaces import FACTOR_REGISTRY
@@ -220,9 +219,44 @@ def _basket_manifest(basket: Portfolio) -> BasketManifest:
                 inverse_volatility = 1 / np.sqrt(variance)
                 weights = inverse_volatility / inverse_volatility.sum()
             else:
-                if np.any(np.diag(covariance) <= 0):
+                # Validate the retained ERC allocation, never solve a new allocation
+                # during frozen-state loading. The residual is the builder's declared
+                # 1e-8 acceptance criterion, not proof of exact solver execution.
+                if not np.all(np.isfinite(covariance)) or np.any(np.diag(covariance) <= 0):
                     raise ValueError("Reference Basket requires positive volatility")
-                weights = _equal_risk_weights(covariance)
+                if not np.array_equal(covariance, covariance.T):
+                    raise ValueError("Reference Basket covariance must be symmetric")
+                eigenvalues = np.linalg.eigvalsh(covariance)
+                if not np.all(np.isfinite(eigenvalues)):
+                    raise ValueError("Reference Basket covariance has nonfinite eigenvalues")
+                # Permit roundoff around singular sample covariance; do not repair it.
+                spectral_scale = float(np.max(np.abs(eigenvalues)))
+                roundoff = np.finfo(np.float64).eps * size * spectral_scale
+                if float(eigenvalues[0]) < -roundoff:
+                    raise ValueError("Reference Basket covariance must be positive semidefinite")
+                weights = np.array(
+                    [float(p.notional / manifest.total_notional) for p in basket.positions],
+                    dtype=float,
+                )
+                if not np.all(np.isfinite(weights)) or np.any(weights <= 0):
+                    raise ValueError(
+                        "Reference Basket retained weights must be finite and positive"
+                    )
+                with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+                    contributions = weights * (covariance @ weights)
+                    total_variance = float(weights @ covariance @ weights)
+                    residual = float(np.square(contributions / total_variance - 1 / size).sum())
+                if (
+                    not np.isfinite(total_variance)
+                    or total_variance <= 0
+                    or not np.all(np.isfinite(contributions))
+                    or not np.isfinite(residual)
+                    or residual > 1e-8
+                ):
+                    raise ValueError(
+                        "Reference Basket retained allocation violates equal-risk tolerance"
+                    )
+                return manifest
             # Match the builder's currency allocation and final residual conventions.
             allocations = [manifest.total_notional * Decimal(str(w)) for w in weights[:-1]]
             allocations.append(manifest.total_notional - sum(allocations, Decimal(0)))

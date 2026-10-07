@@ -533,3 +533,110 @@ def test_undeclared_or_unsupported_basket_arithmetic_is_rejected(declared):
         manifest["allocation_arithmetic_version"] = declared
     with pytest.raises(ValueError, match="manifest"):
         calibration(reference_basket=basket.model_copy(update={"version": json.dumps(manifest)}))
+
+
+def frozen_erc_calibration():
+    basket = ReferenceBasketBuilder().build(
+        rows(), spec(BasketConstruction.EQUAL_RISK_CONTRIBUTION)
+    )
+    return calibration(reference_basket=basket)
+
+
+@pytest.mark.parametrize("precision", [3, 28, 50])
+def test_frozen_erc_parse_and_valuation_never_optimize_or_rewrite(precision, monkeypatch):
+    import risk_engine.impact.module as impact_module
+    import risk_engine.impact.reference_basket as basket_module
+
+    original = frozen_erc_calibration()
+    before = original.model_dump_json()
+    expected = ImpactEstimator(repository(), original, market()).calibration_summary
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("frozen validation attempted ERC optimization")
+
+    monkeypatch.setattr(basket_module, "_equal_risk_weights", forbidden)
+    monkeypatch.setattr(basket_module, "minimize", forbidden)
+    monkeypatch.setattr(impact_module, "_equal_risk_weights", forbidden, raising=False)
+    with localcontext() as context:
+        context.prec = precision
+        restored = FrozenImpactCalibration.model_validate_json(before)
+        actual = ImpactEstimator(repository(), restored, market()).calibration_summary
+    assert actual == expected
+    assert restored.model_dump_json() == before
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "redistribution",
+        "nonfinite",
+        "asymmetric",
+        "indefinite",
+        "zero_variance",
+        "negative_weight",
+        "wrong_total",
+    ],
+)
+def test_frozen_erc_direct_validation_rejects_invalid_math(mutation, monkeypatch):
+    import risk_engine.impact.module as impact_module
+
+    original = frozen_erc_calibration()
+    data = original.model_dump()
+    basket = data["reference_basket"]
+    manifest = json.loads(basket["version"])
+    if mutation == "redistribution":
+        basket["positions"][0]["notional"] += Decimal(100)
+        basket["positions"][1]["notional"] -= Decimal(100)
+    elif mutation == "nonfinite":
+        manifest["covariance"][0][0] = float("nan")
+    elif mutation == "asymmetric":
+        manifest["covariance"][0][1] *= 2
+    elif mutation == "indefinite":
+        # Symmetric positive diagonal, but a negative eigenvalue: invalid sample covariance.
+        manifest["covariance"] = [[1.0, 2.0], [2.0, 1.0]]
+    elif mutation == "zero_variance":
+        manifest["covariance"] = [[0.0, 0.0], [0.0, 0.0]]
+    elif mutation == "negative_weight":
+        basket["positions"][0]["notional"] = Decimal(-1)
+        basket["positions"][1]["notional"] = Decimal(1001)
+    else:
+        basket["positions"][0]["notional"] += Decimal(1)
+    basket["version"] = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
+    calls = []
+
+    def forbidden(*args, **kwargs):
+        calls.append(True)
+        raise AssertionError("invalid frozen input reached optimizer")
+
+    monkeypatch.setattr(impact_module, "_equal_risk_weights", forbidden, raising=False)
+    with pytest.raises(ValueError):
+        FrozenImpactCalibration.model_validate(data)
+    assert not calls
+
+
+@pytest.mark.parametrize("scale", [1e-100, 1.0, 1e100])
+def test_frozen_erc_accepts_singular_scaled_covariance_and_tiny_valid_redistribution(
+    scale, monkeypatch
+):
+    import risk_engine.impact.module as impact_module
+
+    original = frozen_erc_calibration()
+    data = original.model_dump()
+    manifest = json.loads(data["reference_basket"]["version"])
+    manifest["covariance"] = [[value * scale for value in row] for row in manifest["covariance"]]
+    # This is explicitly allowed mathematical tolerance, not bitwise solver reproduction.
+    data["reference_basket"]["positions"][0]["notional"] += Decimal("0.00001")
+    data["reference_basket"]["positions"][1]["notional"] -= Decimal("0.00001")
+    data["reference_basket"]["version"] = json.dumps(
+        manifest, sort_keys=True, separators=(",", ":")
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("frozen validation attempted optimizer")
+
+    monkeypatch.setattr(impact_module, "_equal_risk_weights", forbidden, raising=False)
+    restored = FrozenImpactCalibration.model_validate(data)
+    assert (
+        restored.reference_basket.positions[0].notional
+        == data["reference_basket"]["positions"][0]["notional"]
+    )
