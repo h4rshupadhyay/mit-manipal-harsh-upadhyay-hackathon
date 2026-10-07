@@ -1674,3 +1674,16 @@ def test_rehashed_audit_rejects_ordinal_score_contradicting_retained_evidence(tm
             status="ready",
         )
         backtest.ArtifactEnvelope.model_validate_json(canonical_bytes(envelope[2]))
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_cli_preserves_caller_owned_fitter_lifetime(tmp_path, monkeypatch, failure):
+    _, _, fitter, args = write_cli_inputs(tmp_path)
+
+    def forbidden_close():
+        pytest.fail("CLI closed a caller-owned fitter")
+
+    monkeypatch.setattr(fitter, "close", forbidden_close, raising=False)
+    if failure:
+        (tmp_path / "selection").mkdir()
+    assert cli().main(args, fitter=fitter) == (1 if failure else 0)

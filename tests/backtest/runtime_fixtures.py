@@ -614,3 +614,70 @@ def frozen_state_payload(directory):
         policy_audit=None,
         policy_absence_reason="candidate explicitly unselected",
     )
+
+
+def runtime_cli_contracts(directory: Path):
+    """Chronological complete CLI contracts, explicitly project-authored simulations."""
+    from risk_engine.backtest.module import (
+        BacktestDataset,
+        DevelopmentConfiguration,
+        EvaluationPeriod,
+    )
+    from risk_engine.backtest.runtime_inputs import RuntimeEvidenceIndex
+    from tests.backtest.test_policy_selection import _spec
+
+    configuration, definition, index, locations, candidate, training = production_inputs(
+        directory, count=8, policy_spec=_spec(train_groups=2, validation_groups=1)
+    )
+    items = tuple(
+        sorted(
+            (item for case in training.cases for item in case.cluster.items),
+            key=lambda item: item.source_item_id,
+        )
+    )
+    dataset = seal(
+        BacktestDataset,
+        dict(
+            schema_version="backtest-dataset-v1",
+            snapshot_id="project-authored-cli-contracts",
+            evidence_kind="empirical",
+            provenance=TERMS[0],
+            source_terms=TERMS,
+            source_snapshots=(
+                SnapshotReference(
+                    snapshot_id="snapshot",
+                    content_hash=content_hash(items),
+                    source_terms=TERMS,
+                ),
+            ),
+            clustering=ClusteringConfig(similarity_threshold=1, max_time_delta_hours=1),
+            cases=training.cases,
+            outcomes=training.outcomes,
+        ),
+        "content_hash",
+    )
+    candidate = candidate.model_copy(
+        update={
+            "parameters": candidate.parameters | {"policy_mode": "unselected"},
+        }
+    )
+    cutoff = dataset.cases[-1].as_of - timedelta(hours=1)
+    configuration = DevelopmentConfiguration.model_validate(
+        configuration.model_dump()
+        | {
+            "candidates": (candidate,),
+            "split": configuration.split.model_dump() | {"initial_outer_train_groups": 4},
+            "final_fit_cutoff": cutoff,
+        }
+    )
+    index = seal(
+        RuntimeEvidenceIndex,
+        index.model_dump(exclude={"content_hash"}) | {"dataset_hash": dataset.content_hash},
+        "content_hash",
+    )
+    period = EvaluationPeriod(
+        start=dataset.cases[4].cluster.event_time,
+        end=dataset.cases[-2].as_of + timedelta(hours=1),
+        reporting_cutoff=dataset.outcomes[-1].outcome_available_at,
+    )
+    return dataset, configuration, period, definition, index, locations

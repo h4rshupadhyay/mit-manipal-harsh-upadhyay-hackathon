@@ -1,7 +1,7 @@
 """Publish development artefacts and consume a selected lock's final attempt once.
 
-Application code must inject a verified local CandidateFitter. There is no default
-model backend, plugin factory, acquisition, implicit refresh, or overwrite mode.
+Supply a verified local runtime configuration or inject a CandidateFitter through
+application code. No acquisition, implicit refresh, or overwrite mode is provided.
 """
 
 from __future__ import annotations
@@ -31,6 +31,13 @@ from risk_engine.backtest.module import (
     UnresolvedPayload,
     canonical_bytes,
     content_hash,
+)
+from risk_engine.backtest.runtime import ProductionCandidateFitter
+from risk_engine.backtest.runtime_inputs import (
+    LocalModelLocations,
+    RuntimeLocationConfig,
+    load_runtime_definition,
+    load_runtime_evidence_index,
 )
 from risk_engine.stress.module import StressEngine
 
@@ -178,7 +185,9 @@ def _complete_reserved(handle: BinaryIO, artifact: FinalArtifact) -> None:
     os.fsync(handle.fileno())
 
 
-def _final(args: argparse.Namespace, fitter: CandidateFitter) -> None:
+def _final_inputs(
+    args: argparse.Namespace,
+) -> tuple[tuple[ArtifactEnvelope, ...], BacktestDataset]:
     envelopes = load_artifact_set(args.lock_root)
     selected = envelopes[0]
     assert isinstance(selected.payload, SelectedPayload)
@@ -188,6 +197,24 @@ def _final(args: argparse.Namespace, fitter: CandidateFitter) -> None:
         raise ValueError("locked dataset identity mismatch")
     # Validate local bytes and frozen identities before claiming a holdout attempt.
     lock.fitted.verify_artifacts()
+    return envelopes, dataset
+
+
+def _final(
+    args: argparse.Namespace,
+    fitter: CandidateFitter,
+    *,
+    production_fitter: ProductionCandidateFitter | None = None,
+    verified: tuple[tuple[ArtifactEnvelope, ...], BacktestDataset] | None = None,
+) -> None:
+    if production_fitter is not None and production_fitter is not fitter:
+        raise ValueError("owned production fitter must have identical identity to supplied fitter")
+    envelopes, dataset = _final_inputs(args) if verified is None else verified
+    selected = envelopes[0]
+    assert isinstance(selected.payload, SelectedPayload)
+    lock = selected.payload.locked
+    if production_fitter is not None:
+        production_fitter.preflight_restore(lock.fitted)
     output: Path = args.output_file
     receipt_path = args.lock_root / f".final-attempt-{lock.lock_hash}.json"
     if output.exists() or receipt_path.exists():
@@ -247,6 +274,36 @@ def _final(args: argparse.Namespace, fitter: CandidateFitter) -> None:
             raise
 
 
+def _runtime_fitter(
+    path: Path, configuration: DevelopmentConfiguration, *, selection: bool = True
+) -> ProductionCandidateFitter:
+    locations = RuntimeLocationConfig.model_validate_json(path.read_bytes())
+    root = path.resolve().parent
+
+    def resolve(location: Path) -> Path:
+        return (root / location).resolve()
+
+    if selection and locations.evidence_index_path is None:
+        raise ValueError("--select runtime configuration requires evidence_index_path")
+    definition = load_runtime_definition(resolve(locations.definition_path))
+    evidence_index = (
+        load_runtime_evidence_index(resolve(locations.evidence_index_path))
+        if selection and locations.evidence_index_path is not None
+        else None
+    )
+    return ProductionCandidateFitter(
+        configuration=configuration,
+        definition=definition,
+        evidence_index=evidence_index,
+        model_locations=LocalModelLocations(
+            sentiment_snapshot=resolve(locations.models.sentiment_snapshot),
+            event_snapshot=resolve(locations.models.event_snapshot),
+            device=locations.models.device,
+        ),
+        artifact_root=resolve(locations.artifact_root),
+    )
+
+
 def main(argv: list[str] | None = None, *, fitter: CandidateFitter | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
@@ -258,27 +315,51 @@ def main(argv: list[str] | None = None, *, fitter: CandidateFitter | None = None
     parser.add_argument("--output-root", type=Path)
     parser.add_argument("--lock-root", type=Path)
     parser.add_argument("--output-file", type=Path)
+    parser.add_argument("--runtime-config", type=Path, help="verified local runtime location JSON")
     args = parser.parse_args(argv)
+    if fitter is not None and args.runtime_config is not None:
+        print("--runtime-config and injected fitter are mutually exclusive", file=sys.stderr)
+        return 2
     if args.select and not all((args.config, args.period, args.output_root)):
         parser.error("--select requires --config, --period, and a new --output-root")
     if args.final and not all((args.lock_root, args.output_file)):
         parser.error("--final requires --lock-root and a new --output-file")
-    if fitter is None:
+    if fitter is None and args.runtime_config is None:
         print(
             "No default inference backend is configured. Provide a verified local historical "
             "bundle and model/fit artifacts through an explicit application composition "
-            "invoking main(argv, fitter=...).",
+            "invoking main(argv, fitter=...), or use --runtime-config PATH.",
             file=sys.stderr,
         )
         return 2
+    production_fitter: ProductionCandidateFitter | None = None
     try:
+        verified = None
+        if args.runtime_config is not None:
+            if args.select:
+                configuration = DevelopmentConfiguration.model_validate_json(
+                    args.config.read_bytes()
+                )
+            else:
+                verified = _final_inputs(args)
+                selected = verified[0][0]
+                assert isinstance(selected.payload, SelectedPayload)
+                configuration = selected.payload.locked.configuration
+            production_fitter = _runtime_fitter(
+                args.runtime_config, configuration, selection=args.select
+            )
+            fitter = production_fitter
+        assert fitter is not None
         if args.select:
             _select(args, fitter)
         else:
-            _final(args, fitter)
+            _final(args, fitter, production_fitter=production_fitter, verified=verified)
     except (OSError, ValueError, RuntimeError) as error:
         print(f"Backtest refused: {error}", file=sys.stderr)
         return 1
+    finally:
+        if production_fitter is not None:
+            production_fitter.close()
     return 0
 
 
