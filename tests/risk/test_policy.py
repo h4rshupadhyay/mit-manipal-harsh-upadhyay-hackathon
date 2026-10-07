@@ -1,5 +1,6 @@
 """Synthetic policy fixtures exercise gates, not empirical policy selection."""
 
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, localcontext
@@ -19,9 +20,98 @@ from risk_engine.domain import (
     SignalFlag,
     VersionMetadata,
 )
-from risk_engine.risk.policy import ManualOverride, TriggerDecision, TriggerPolicy
+from risk_engine.risk.policy import (
+    CandidateTriggerEvaluation,
+    ManualOverride,
+    TriggerCriteria,
+    TriggerDecision,
+    TriggerPolicy,
+    evaluate_candidate_trigger,
+)
 
 TIME = datetime(2025, 1, 4, tzinfo=timezone.utc)
+
+
+def criteria() -> TriggerCriteria:
+    return TriggerCriteria(
+        confidence_threshold=Decimal("0.85"),
+        economic_floor=Decimal("100.00"),
+        materiality_tolerance=Decimal("0.01"),
+        currency="USD",
+        confidence_target=ConfidenceTarget.JOINT_ENTITY_AND_EVENT_CLASS,
+    )
+
+
+def test_candidate_trigger_has_only_substantive_gates() -> None:
+    result = evaluate_candidate_trigger(signal(), materiality("99.99"), criteria())
+    assert tuple(g.name for g in result.gates) == (
+        "entity_identity",
+        "confidence_binding",
+        "confidence_threshold",
+        "impact_threshold",
+        "supported_risk",
+        "materiality_currency",
+        "economic_floor",
+    )
+    assert result.would_trigger == all(g.passed for g in result.gates)
+    assert result.would_trigger
+    assert not evaluate_candidate_trigger(signal(), materiality("99.989"), criteria()).would_trigger
+    assert not evaluate_candidate_trigger(
+        signal(), materiality(currency="INR"), criteria()
+    ).would_trigger
+    for item in (
+        signal().model_copy(
+            update={"entity": signal().entity.model_copy(update={"entity_id": "unknown:bank"})}
+        ),
+        signal().model_copy(update={"flags": (SignalFlag.UNSUPPORTED_EXPOSURE,)}),
+        signal().model_copy(
+            update={"impact": signal().impact.model_copy(update={"impact_score": 7})}
+        ),
+    ):
+        assert not evaluate_candidate_trigger(item, materiality(), criteria()).would_trigger
+    with pytest.raises(ValidationError):
+        CandidateTriggerEvaluation(gates=result.gates[:-1], would_trigger=True)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("confidence_threshold", Decimal("0")),
+        ("confidence_threshold", Decimal("NaN")),
+        ("economic_floor", Decimal("Infinity")),
+        ("economic_floor", Decimal("0")),
+        ("materiality_tolerance", Decimal("100")),
+        ("materiality_tolerance", Decimal("-1")),
+        ("confidence_target", "other"),
+    ],
+)
+def test_candidate_rejects_invalid_copied_criteria(field: str, value: object) -> None:
+    invalid = criteria().model_copy(update={field: value})
+    with pytest.raises(ValidationError):
+        evaluate_candidate_trigger(signal(), materiality(), invalid)
+
+
+def test_existing_decision_bytes_are_stable() -> None:
+    examples = (
+        (
+            policy().evaluate(signal(), materiality()),
+            "8c94399d1ae5425d3bc5611ecd9a107edfccff48829da4f502e99f7e90e382f1",
+        ),
+        (
+            TriggerPolicy(PolicyConfig(), as_of=TIME).evaluate(signal(), materiality()),
+            "5cd7250149ecccb7c09cc5cc4a562edf9541c6b973426df05741a84834aa83ae",
+        ),
+        (
+            TriggerPolicy(PolicyConfig(), as_of=TIME).evaluate(
+                signal(),
+                materiality(),
+                manual_override=ManualOverride(analyst_id="analyst-1", reason="Run sensitivity"),
+            ),
+            "5ec9986ddea63a3c9b32b4cccef57a1d0ec30f54f4f4e02d445700ca3365c66e",
+        ),
+    )
+    for decision, expected in examples:
+        assert hashlib.sha256(decision.model_dump_json().encode()).hexdigest() == expected
 
 
 def selected_payload() -> dict:

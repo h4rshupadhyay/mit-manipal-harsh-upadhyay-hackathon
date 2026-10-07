@@ -16,6 +16,7 @@ from pydantic import AwareDatetime, model_validator
 from risk_engine.config import PolicyConfig
 from risk_engine.domain import (
     ConfidenceTarget,
+    CurrencyCode,
     DomainModel,
     ImpactScore,
     NonEmptyString,
@@ -43,6 +44,51 @@ class TriggerGate(DomainModel):
     name: GateName
     passed: bool
     reason: NonEmptyString
+
+
+_SUBSTANTIVE_NAMES = (
+    "entity_identity",
+    "confidence_binding",
+    "confidence_threshold",
+    "impact_threshold",
+    "supported_risk",
+    "materiality_currency",
+    "economic_floor",
+)
+
+
+class TriggerCriteria(DomainModel):
+    confidence_threshold: Decimal
+    economic_floor: Decimal
+    materiality_tolerance: Decimal
+    currency: CurrencyCode
+    confidence_target: Literal[ConfidenceTarget.JOINT_ENTITY_AND_EVENT_CLASS]
+
+    @model_validator(mode="after")
+    def valid_thresholds(self) -> TriggerCriteria:
+        if not all(
+            v.is_finite()
+            for v in (self.confidence_threshold, self.economic_floor, self.materiality_tolerance)
+        ) or not (
+            0 < self.confidence_threshold <= 1
+            and self.economic_floor > 0
+            and 0 <= self.materiality_tolerance < self.economic_floor
+        ):
+            raise ValueError("invalid finite candidate trigger thresholds")
+        return self
+
+
+class CandidateTriggerEvaluation(DomainModel):
+    gates: tuple[TriggerGate, ...]
+    would_trigger: bool
+
+    @model_validator(mode="after")
+    def ordered_results(self) -> CandidateTriggerEvaluation:
+        if tuple(g.name for g in self.gates) != _SUBSTANTIVE_NAMES:
+            raise ValueError("candidate trigger requires complete ordered substantive gates")
+        if self.would_trigger != all(g.passed for g in self.gates):
+            raise ValueError("candidate trigger status differs from retained gate results")
+        return self
 
 
 class ManualOverride(DomainModel):
@@ -121,6 +167,94 @@ def _meets_floor(loss: Decimal, floor: Decimal, tolerance: Decimal) -> bool:
         return loss >= floor - tolerance
 
 
+def _substantive_gates(
+    signal: RiskSignal,
+    loss: PortfolioMateriality,
+    *,
+    confidence_threshold: Decimal | None,
+    economic_floor: Decimal | None,
+    materiality_tolerance: Decimal | None,
+    currency: CurrencyCode | None,
+    confidence_bound: bool,
+    impact_threshold: int,
+) -> tuple[TriggerGate, ...]:
+    known_entity = (
+        not signal.entity.ambiguous
+        and SignalFlag.AMBIGUOUS_ENTITY not in signal.flags
+        and not signal.entity.entity_id.casefold().startswith(("unknown:", "ambiguous:"))
+    )
+    gates: list[TriggerGate] = []
+
+    def gate(name: GateName, passed: bool, success: str, failure: str) -> None:
+        gates.append(TriggerGate(name=name, passed=passed, reason=success if passed else failure))
+
+    gate(
+        "entity_identity",
+        known_entity,
+        "Entity identity is known and unambiguous",
+        "Unknown or ambiguous entity identity cannot automatically trigger stress",
+    )
+    gate(
+        "confidence_binding",
+        confidence_bound,
+        "Confidence target and calibration version match selected policy",
+        "Selected policy is absent or Confidence target/calibration version does not match",
+    )
+    gate(
+        "confidence_threshold",
+        confidence_threshold is not None
+        and Decimal(str(signal.confidence)) >= confidence_threshold,
+        "Confidence meets the selected inclusive threshold",
+        "Confidence threshold is unselected or calibrated probability is below it",
+    )
+    gate(
+        "impact_threshold",
+        signal.impact.impact_score >= impact_threshold,
+        "Impact Score meets the requirement-driven inclusive threshold of 8",
+        "Impact Score is below the requirement-driven threshold of 8",
+    )
+    gate(
+        "supported_risk",
+        SignalFlag.UNSUPPORTED_EXPOSURE not in signal.flags,
+        "No unsupported exposure is declared",
+        "Unsupported exposure cannot be treated as zero risk",
+    )
+    gate(
+        "materiality_currency",
+        currency is not None and loss.currency == currency,
+        "Portfolio Materiality currency matches the selected economic floor",
+        "Economic floor currency is unselected or differs; no implicit FX conversion",
+    )
+    gate(
+        "economic_floor",
+        economic_floor is not None
+        and materiality_tolerance is not None
+        and _meets_floor(loss.absolute_loss, economic_floor, materiality_tolerance),
+        "Absolute Portfolio Materiality meets the inclusive floor within declared tolerance",
+        "Economic floor is unselected or absolute loss is below floor minus tolerance",
+    )
+    return tuple(gates)
+
+
+def evaluate_candidate_trigger(
+    signal: RiskSignal, materiality: PortfolioMateriality, criteria: TriggerCriteria
+) -> CandidateTriggerEvaluation:
+    signal = RiskSignal.model_validate(signal.model_dump(mode="python"))
+    materiality = PortfolioMateriality.model_validate(materiality.model_dump(mode="python"))
+    criteria = TriggerCriteria.model_validate(criteria.model_dump(mode="python"))
+    gates = _substantive_gates(
+        signal,
+        materiality,
+        confidence_threshold=criteria.confidence_threshold,
+        economic_floor=criteria.economic_floor,
+        materiality_tolerance=criteria.materiality_tolerance,
+        currency=criteria.currency,
+        confidence_bound=signal.confidence_target == criteria.confidence_target,
+        impact_threshold=8,
+    )
+    return CandidateTriggerEvaluation(gates=gates, would_trigger=all(g.passed for g in gates))
+
+
 class TriggerPolicy:
     def __init__(self, config: PolicyConfig, *, as_of: datetime) -> None:
         # Revalidate copied records rather than blessing unchecked model_copy updates.
@@ -171,11 +305,6 @@ class TriggerPolicy:
     ) -> tuple[TriggerGate, ...]:
         """One gate definition shared by creation and restored-record validation."""
         selected = config.selected
-        known_entity = (
-            not signal.entity.ambiguous
-            and SignalFlag.AMBIGUOUS_ENTITY not in signal.flags
-            and not signal.entity.entity_id.casefold().startswith(("unknown:", "ambiguous:"))
-        )
         gates: list[TriggerGate] = []
 
         def gate(name: GateName, passed: bool, success: str, failure: str) -> None:
@@ -195,55 +324,29 @@ class TriggerPolicy:
             "Selected policy was frozen by the explicit replay cutoff",
             "Selected policy is absent or was frozen after the replay cutoff",
         )
-        gate(
-            "entity_identity",
-            known_entity,
-            "Entity identity is known and unambiguous",
-            "Unknown or ambiguous entity identity cannot automatically trigger stress",
-        )
-        gate(
-            "confidence_binding",
-            selected is not None
-            and signal.confidence_target == selected.confidence_target
-            and signal.versions.calibration_version == selected.calibration_version,
-            "Confidence target and calibration version match selected policy",
-            "Selected policy is absent or Confidence target/calibration version does not match",
-        )
-        gate(
-            "confidence_threshold",
-            selected is not None
-            and Decimal(str(signal.confidence)) >= selected.confidence_threshold,
-            "Confidence meets the selected inclusive threshold",
-            "Confidence threshold is unselected or calibrated probability is below it",
-        )
-        gate(
-            "impact_threshold",
-            signal.impact.impact_score >= config.impact_threshold,
-            "Impact Score meets the requirement-driven inclusive threshold of 8",
-            "Impact Score is below the requirement-driven threshold of 8",
-        )
-        gate(
-            "supported_risk",
-            SignalFlag.UNSUPPORTED_EXPOSURE not in signal.flags,
-            "No unsupported exposure is declared",
-            "Unsupported exposure cannot be treated as zero risk",
-        )
-        gate(
-            "materiality_currency",
-            selected is not None and loss.currency == selected.currency,
-            "Portfolio Materiality currency matches the selected economic floor",
-            "Economic floor currency is unselected or differs; no implicit FX conversion",
-        )
-        gate(
-            "economic_floor",
-            selected is not None
-            and _meets_floor(
-                loss.absolute_loss, selected.economic_floor, selected.materiality_tolerance
-            ),
-            "Absolute Portfolio Materiality meets the inclusive floor within declared tolerance",
-            "Economic floor is unselected or absolute loss is below floor minus tolerance",
+        gates.extend(
+            _substantive_gates(
+                signal,
+                loss,
+                confidence_threshold=selected.confidence_threshold if selected else None,
+                economic_floor=selected.economic_floor if selected else None,
+                materiality_tolerance=selected.materiality_tolerance if selected else None,
+                currency=selected.currency if selected else None,
+                confidence_bound=selected is not None
+                and signal.confidence_target == selected.confidence_target
+                and signal.versions.calibration_version == selected.calibration_version,
+                impact_threshold=config.impact_threshold,
+            )
         )
         return tuple(gates)
 
 
-__all__ = ["ManualOverride", "TriggerDecision", "TriggerGate", "TriggerPolicy"]
+__all__ = [
+    "CandidateTriggerEvaluation",
+    "ManualOverride",
+    "TriggerCriteria",
+    "TriggerDecision",
+    "TriggerGate",
+    "TriggerPolicy",
+    "evaluate_candidate_trigger",
+]
