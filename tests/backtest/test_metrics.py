@@ -1,3 +1,6 @@
+import json
+import math
+import sys
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, localcontext
 from zoneinfo import ZoneInfo
@@ -391,6 +394,36 @@ def test_selects_simplest_at_inclusive_best_standard_error_boundary() -> None:
     assert m.SelectionResult.model_validate_json(result.model_dump_json()) == result
 
 
+@pytest.mark.parametrize("direction,sign", [("maximize", 1), ("minimize", -1)])
+def test_selection_preserves_v1_finite_score_boundary_exactly(direction, sign) -> None:
+    result = m.select_within_one_standard_error(
+        [
+            candidate("best", (sign * 0.01, sign * 0.06), 1, direction=direction),
+            candidate("simple", (sign * 0.01, sign * 0.01), 0, direction=direction),
+        ]
+    )
+    assert result.best_mean == sign * 0.034999999999999996
+    assert result.best_standard_error == 0.024999999999999998
+    assert result.eligibility_threshold == sign * 0.009999999999999998
+    assert result.eligible_candidate_ids == ("best", "simple")
+    assert result.selected_candidate_id == "simple"
+
+
+def test_selection_restores_existing_v1_json_with_exact_finite_score_summary() -> None:
+    result = m.select_within_one_standard_error([candidate("best", (0.2, 0.3), 1)])
+    # These literal summaries were emitted by the original finite-deviation v1 path.
+    payload = result.model_dump(mode="json")
+    payload["best_mean"] = 0.25
+    payload["best_standard_error"] = 0.04999999999999999
+    payload["eligibility_threshold"] = 0.2
+    payload["summaries"] = [
+        {"candidate_id": "best", "mean_score": 0.25, "standard_error": 0.04999999999999999}
+    ]
+    restored = m.SelectionResult.model_validate_json(json.dumps(payload))
+    assert restored.best_standard_error == 0.04999999999999999
+    assert restored.model_dump(mode="json") == payload
+
+
 def test_minimization_uses_best_standard_error_and_lexicographic_complexity() -> None:
     values = [
         candidate("best", (1, 3), 3, direction="minimize", objective_name="ordinal_mae"),
@@ -587,10 +620,64 @@ def test_currency_metrics_are_independent_of_ambient_decimal_precision() -> None
     assert pnl.supported_value_share == Decimal("0.3333333333333333333333333333")
 
 
-def test_large_finite_selection_scores_have_finite_scale_safe_standard_error() -> None:
-    result = m.select_within_one_standard_error([candidate("large", (-1e200, 1e200), 1)])
-    assert result.best_mean == 0
-    assert result.best_standard_error == pytest.approx(1e200)
+@pytest.mark.parametrize(
+    "scores,mean,standard_error",
+    [
+        ((-1e200, 1e200), 0, 1e200),
+        ((-sys.float_info.max, sys.float_info.max), 0, sys.float_info.max),
+        ((sys.float_info.max, sys.float_info.max), sys.float_info.max, 0),
+        ((0, 0), 0, 0),
+    ],
+)
+def test_large_finite_selection_scores_have_finite_scale_safe_standard_error(
+    scores, mean, standard_error
+) -> None:
+    result = m.select_within_one_standard_error([candidate("large", scores, 1)])
+    assert result.best_mean == pytest.approx(mean)
+    assert result.best_standard_error == pytest.approx(standard_error)
+
+
+@pytest.mark.parametrize("direction,sign", [("maximize", 1), ("minimize", -1)])
+def test_finite_selection_scores_scale_before_centering_and_restore(direction, sign) -> None:
+    folds = (
+        *INNER,
+        InnerFold(
+            fold_id="inner-3",
+            train=(group("c", 2),),
+            embargo=(),
+            validation=(group("d", 3),),
+        ),
+    )
+    maximum = sys.float_info.max
+    scores = (-sign * maximum, sign * maximum, sign * maximum)
+    values = [
+        candidate(
+            identity,
+            (),
+            complexity,
+            direction=direction,
+            fold_results=tuple(
+                m.InnerDevelopmentResult(fold=fold, score=score)
+                for fold, score in zip(folds, fold_scores, strict=True)
+            ),
+        )
+        for identity, complexity, fold_scores in [("large", 1, scores), ("simple", 0, (0, 0, 0))]
+    ]
+    result = m.select_within_one_standard_error(values)
+    assert result.best_mean == pytest.approx(sign * 5.992310449541052e307)
+    assert result.best_standard_error == pytest.approx(1.1984620899082105e308)
+    assert result.eligibility_threshold == pytest.approx(-sign * 5.992310449541052e307)
+    assert result.best_candidate_id == "large"
+    assert result.selected_candidate_id == "simple"
+    assert result.eligible_candidate_ids == ("large", "simple")
+    assert all(
+        math.isfinite(value)
+        for summary in result.summaries
+        for value in (summary.mean_score, summary.standard_error)
+    )
+    reordered = m.select_within_one_standard_error(values[::-1])
+    assert reordered.model_dump_json() == result.model_dump_json()
+    assert m.SelectionResult.model_validate_json(result.model_dump_json()) == result
 
 
 @pytest.mark.parametrize(

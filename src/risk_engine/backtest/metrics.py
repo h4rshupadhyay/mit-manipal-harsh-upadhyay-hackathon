@@ -709,13 +709,22 @@ def _selection_values(
         scores = [r.score for r in row.fold_results]
         mean = _mean(scores)
         n = len(scores)
-        deviations = _numbers([v - mean for v in scores])
-        scale = max(abs(v) for v in deviations)
-        standard_error = (
-            math.hypot(*(v / scale for v in deviations)) / math.sqrt(n * (n - 1)) * scale
-            if scale
-            else 0
-        )
+        deviations = [v - mean for v in scores]
+        if all(math.isfinite(v) for v in deviations):
+            # Preserve exact v1 arithmetic for existing results and saved evidence.
+            scale = max(abs(v) for v in deviations)
+            standard_error = (
+                math.hypot(*(v / scale for v in deviations)) / math.sqrt(n * (n - 1)) * scale
+                if scale
+                else 0
+            )
+        else:
+            # Only overflowing differences need bounded centering; retain the mean.
+            scale = max(abs(v) for v in scores)
+            deviations = [v / scale - mean / scale for v in scores]
+            standard_error = math.hypot(*deviations) / math.sqrt(n * (n - 1)) * scale
+        if not math.isfinite(mean) or not math.isfinite(standard_error):
+            raise ValueError("selection mean and standard error must be finite")
         summaries.append(
             CandidateSummary(
                 candidate_id=row.candidate_id,
@@ -728,6 +737,8 @@ def _selection_values(
         summaries, key=lambda s: (-s.mean_score if maximize else s.mean_score, s.candidate_id)
     )
     threshold = best.mean_score + (-best.standard_error if maximize else best.standard_error)
+    if not math.isfinite(threshold):
+        raise ValueError("selection eligibility threshold must be finite")
     eligible_ids = tuple(
         s.candidate_id
         for s in summaries
