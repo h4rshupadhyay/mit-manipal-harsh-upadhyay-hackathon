@@ -1,0 +1,400 @@
+{
+  "artifacts": [
+    {
+      "evidence_kind": "fictional",
+      "generator_version": "demo-snapshot-generator-v1",
+      "path": "data/demo/news.json",
+      "record_count": 2,
+      "schema_version": "demo-source-bundle-v1",
+      "sha256": "43b3b3154efaea31b63cc690883a782d90e4f6d1851e044699b76a69f165742d",
+      "snapshot_id": "project-authored-demo-20261007-v1",
+      "source_terms": "MIT; project-authored fictional exercise data"
+    },
+    {
+      "evidence_kind": "fictional",
+      "generator_version": "demo-snapshot-generator-v1",
+      "path": "data/demo/social.json",
+      "record_count": 2,
+      "schema_version": "demo-source-bundle-v1",
+      "sha256": "a8d66403b54f9ab9a20ae9d2529b4ac46b01b8c07feac8505966dea94529a51b",
+      "snapshot_id": "project-authored-demo-20261007-v1",
+      "source_terms": "MIT; project-authored fictional exercise data"
+    },
+    {
+      "evidence_kind": "hypothetical",
+      "generator_version": "demo-snapshot-generator-v1",
+      "path": "data/calibration/events.csv",
+      "record_count": 2,
+      "schema_version": "demo-hypothetical-events-v1",
+      "sha256": "96e51cf220a01ef81902bdb9a15c47577a2e6c567561e89912035dcdcdff4b49",
+      "snapshot_id": "project-authored-demo-20261007-v1",
+      "source_terms": "MIT; project-authored fictional exercise data"
+    },
+    {
+      "evidence_kind": "hypothetical",
+      "generator_version": "demo-snapshot-generator-v1",
+      "path": "data/calibration/factor_shocks.csv",
+      "record_count": 18,
+      "schema_version": "demo-hypothetical-shocks-v1",
+      "sha256": "ff2da5f3a6c83e176a2265381cb66cf0bd6e71f032aa94a400d613793227a87c",
+      "snapshot_id": "project-authored-demo-20261007-v1",
+      "source_terms": "MIT; project-authored fictional exercise data"
+    },
+    {
+      "evidence_kind": "synthetic",
+      "generator_version": "synthetic-portfolio-generator-v1",
+      "path": "data/portfolio/synthetic_portfolio.csv",
+      "record_count": 60,
+      "schema_version": "synthetic-portfolio-csv-v1",
+      "sha256": "50c7f826257539935dd606542c8d858384af404b996e41eb96a637d5a5e5aab1",
+      "snapshot_id": "synthetic-portfolio-20261004-v1",
+      "source_terms": "MIT; project-authored synthetic data"
+    }
+  ],
+  "authored_at": "2026-10-07T00:00:00Z",
+  "calibration_directory_status": "Hypothetical assumptions only; not observed TrainingEvidence.",
+  "content_hash": "745d26374447b5f9878ebd29a7c82676812254a9114e00862d95dd40b5f157fa",
+  "evidence_kind": "fictional-and-hypothetical",
+  "generator_version": "demo-snapshot-generator-v1",
+  "market_evidence_kind": "project-authored-hypothetical-levels",
+  "market_snapshot": {
+    "as_of": "2026-10-04T00:00:00Z",
+    "normalization_version": "native-units-v1",
+    "observations": [
+      {
+        "factor_id": "COMMODITY",
+        "observed_at": "2026-10-04T00:00:00Z",
+        "provider": "project-authored-demo",
+        "unit": "absolute",
+        "value": 100.0,
+        "vintage": "hypothetical-exercise-assumptions-v1"
+      },
+      {
+        "factor_id": "CREDIT-SPREAD",
+        "observed_at": "2026-10-04T00:00:00Z",
+        "provider": "project-authored-demo",
+        "unit": "basis_point",
+        "value": 150.0,
+        "vintage": "hypothetical-exercise-assumptions-v1"
+      },
+      {
+        "factor_id": "DEFAULT",
+        "observed_at": "2026-10-04T00:00:00Z",
+        "provider": "project-authored-demo",
+        "unit": "decimal",
+        "value": 0.0,
+        "vintage": "hypothetical-exercise-assumptions-v1"
+      },
+      {
+        "factor_id": "EQUITY-ASIA",
+        "observed_at": "2026-10-04T00:00:00Z",
+        "provider": "project-authored-demo",
+        "unit": "index_point",
+        "value": 100.0,
+        "vintage": "hypothetical-exercise-assumptions-v1"
+      },
+      {
+        "factor_id": "EQUITY-EUROPE",
+        "observed_at": "2026-10-04T00:00:00Z",
+        "provider": "project-authored-demo",
+        "unit": "index_point",
+        "value": 100.0,
+        "vintage": "hypothetical-exercise-assumptions-v1"
+      },
+      {
+        "factor_id": "EQUITY-INDIA",
+        "observed_at": "2026-10-04T00:00:00Z",
+        "provider": "project-authored-demo",
+        "unit": "index_point",
+        "value": 100.0,
+        "vintage": "hypothetical-exercise-assumptions-v1"
+      },
+      {
+        "factor_id": "EQUITY-US",
+        "observed_at": "2026-10-04T00:00:00Z",
+        "provider": "project-authored-demo",
+        "unit": "index_point",
+        "value": 100.0,
+        "vintage": "hypothetical-exercise-assumptions-v1"
+      },
+      {
+        "factor_id": "EUR-USD",
+        "observed_at": "2026-10-04T00:00:00Z",
+        "provider": "project-authored-demo",
+        "unit": "currency",
+        "value": 1.1,
+        "vintage": "hypothetical-exercise-assumptions-v1"
+      },
+      {
+        "factor_id": "RATE-EUR",
+        "observed_at": "2026-10-04T00:00:00Z",
+        "provider": "project-authored-demo",
+        "unit": "basis_point",
+        "value": 300.0,
+        "vintage": "hypothetical-exercise-assumptions-v1"
+      },
+      {
+        "factor_id": "RATE-INR",
+        "observed_at": "2026-10-04T00:00:00Z",
+        "provider": "project-authored-demo",
+        "unit": "basis_point",
+        "value": 600.0,
+        "vintage": "hypothetical-exercise-assumptions-v1"
+      },
+      {
+        "factor_id": "RATE-USD",
+        "observed_at": "2026-10-04T00:00:00Z",
+        "provider": "project-authored-demo",
+        "unit": "basis_point",
+        "value": 400.0,
+        "vintage": "hypothetical-exercise-assumptions-v1"
+      },
+      {
+        "factor_id": "USD-INR",
+        "observed_at": "2026-10-04T00:00:00Z",
+        "provider": "project-authored-demo",
+        "unit": "currency",
+        "value": 80.0,
+        "vintage": "hypothetical-exercise-assumptions-v1"
+      },
+      {
+        "factor_id": "VOLATILITY",
+        "observed_at": "2026-10-04T00:00:00Z",
+        "provider": "project-authored-demo",
+        "unit": "volatility_point",
+        "value": 20.0,
+        "vintage": "hypothetical-exercise-assumptions-v1"
+      }
+    ],
+    "provider": "project-authored-demo",
+    "schema_version": "market-v1",
+    "snapshot_id": "project-authored-demo-market-v1"
+  },
+  "market_source_terms": "MIT; project-authored fictional exercise data",
+  "portfolio": {
+    "as_of": "2026-10-04T00:00:00Z",
+    "path": "data/portfolio/synthetic_portfolio.csv",
+    "portfolio_id": "synthetic-wholesale-global-v1",
+    "portfolio_version": "synthetic-portfolio-v1",
+    "schema_version": "synthetic-portfolio-csv-v1",
+    "sha256": "50c7f826257539935dd606542c8d858384af404b996e41eb96a637d5a5e5aab1",
+    "snapshot_id": "synthetic-portfolio-20261004-v1",
+    "valuation_currency": "USD"
+  },
+  "readiness": {
+    "actual_historical_cases_available": false,
+    "empirical_calibration_available": false,
+    "final_evaluation_available": false,
+    "full_replay_available": false,
+    "illustrative_inputs_complete": true,
+    "local_models_available": false,
+    "missing_prerequisites": [
+      "Verified immutable local FinBERT and event-classifier model snapshots and resolved lock.",
+      "Authentic historical source/label/benchmark and simultaneous six-role observation bundle.",
+      "Actual historical RBI-policy and Indian credit/default case evidence.",
+      "Production CandidateFitter composition and observed Impact/Confidence calibration.",
+      "Chronologically selected and frozen automatic trigger policy.",
+      "Untouched final evaluation interval and locked empirical BacktestReport."
+    ],
+    "selected_policy_available": false
+  },
+  "scenarios": [
+    {
+      "assumption_version": "hypothetical-exercise-assumptions-v1",
+      "assumptions_frozen_at": "2026-10-07T00:00:00Z",
+      "derivation_reference": "scripts/prepare_demo_snapshot.py#demo-rbi-policy-v1",
+      "event_id": "demo-event-rbi-v1",
+      "origin_explanation": "Manual origin reference; not an emitted RiskSignal ID.",
+      "origin_kind": "manual-source-reference",
+      "parent_scenario_id": null,
+      "scenario": {
+        "analyst_override": false,
+        "calibration_version": "hypothetical-exercise-assumptions-v1",
+        "method": "hypothetical",
+        "override_reason": null,
+        "reference_event_ids": [],
+        "risk_signal_id": "manual-exercise:demo-news-rbi-v1",
+        "scenario_id": "demo-rbi-policy-v1",
+        "shocks": [
+          {
+            "factor_id": "EQUITY-INDIA",
+            "horizon_days": 1,
+            "shock_type": "relative",
+            "unit": "percent",
+            "value": -2.0
+          },
+          {
+            "factor_id": "RATE-INR",
+            "horizon_days": 1,
+            "shock_type": "basis_point",
+            "unit": "basis_point",
+            "value": 25.0
+          },
+          {
+            "factor_id": "CREDIT-SPREAD",
+            "horizon_days": 1,
+            "shock_type": "basis_point",
+            "unit": "basis_point",
+            "value": 10.0
+          },
+          {
+            "factor_id": "USD-INR",
+            "horizon_days": 1,
+            "shock_type": "relative",
+            "unit": "percent",
+            "value": 1.0
+          },
+          {
+            "factor_id": "COMMODITY",
+            "horizon_days": 1,
+            "shock_type": "relative",
+            "unit": "percent",
+            "value": -1.0
+          },
+          {
+            "factor_id": "VOLATILITY",
+            "horizon_days": 1,
+            "shock_type": "volatility",
+            "unit": "volatility_point",
+            "value": 2.0
+          }
+        ]
+      },
+      "source_item_id": "demo-news-rbi-v1",
+      "source_terms": "MIT; project-authored fictional exercise data"
+    },
+    {
+      "assumption_version": "hypothetical-exercise-assumptions-v1",
+      "assumptions_frozen_at": "2026-10-07T00:00:00Z",
+      "derivation_reference": "scripts/prepare_demo_snapshot.py#demo-rbi-policy-override-v1",
+      "event_id": "demo-event-rbi-v1",
+      "origin_explanation": "Manual origin reference; not an emitted RiskSignal ID.",
+      "origin_kind": "manual-source-reference",
+      "parent_scenario_id": "demo-rbi-policy-v1",
+      "scenario": {
+        "analyst_override": true,
+        "calibration_version": "hypothetical-exercise-assumptions-v1",
+        "method": "hypothetical",
+        "override_reason": "Analyst-authored illustration assumes a larger simultaneous policy shock; original scenario retained.",
+        "reference_event_ids": [],
+        "risk_signal_id": "manual-exercise:demo-news-rbi-v1",
+        "scenario_id": "demo-rbi-policy-override-v1",
+        "shocks": [
+          {
+            "factor_id": "EQUITY-INDIA",
+            "horizon_days": 1,
+            "shock_type": "relative",
+            "unit": "percent",
+            "value": -3.0
+          },
+          {
+            "factor_id": "RATE-INR",
+            "horizon_days": 1,
+            "shock_type": "basis_point",
+            "unit": "basis_point",
+            "value": 50.0
+          },
+          {
+            "factor_id": "CREDIT-SPREAD",
+            "horizon_days": 1,
+            "shock_type": "basis_point",
+            "unit": "basis_point",
+            "value": 20.0
+          },
+          {
+            "factor_id": "USD-INR",
+            "horizon_days": 1,
+            "shock_type": "relative",
+            "unit": "percent",
+            "value": 2.0
+          },
+          {
+            "factor_id": "COMMODITY",
+            "horizon_days": 1,
+            "shock_type": "relative",
+            "unit": "percent",
+            "value": -2.0
+          },
+          {
+            "factor_id": "VOLATILITY",
+            "horizon_days": 1,
+            "shock_type": "volatility",
+            "unit": "volatility_point",
+            "value": 3.0
+          }
+        ]
+      },
+      "source_item_id": "demo-news-rbi-v1",
+      "source_terms": "MIT; project-authored fictional exercise data"
+    },
+    {
+      "assumption_version": "hypothetical-exercise-assumptions-v1",
+      "assumptions_frozen_at": "2026-10-07T00:00:00Z",
+      "derivation_reference": "scripts/prepare_demo_snapshot.py#demo-indian-credit-v1",
+      "event_id": "demo-event-credit-v1",
+      "origin_explanation": "Manual origin reference; not an emitted RiskSignal ID.",
+      "origin_kind": "manual-source-reference",
+      "parent_scenario_id": null,
+      "scenario": {
+        "analyst_override": false,
+        "calibration_version": "hypothetical-exercise-assumptions-v1",
+        "method": "hypothetical",
+        "override_reason": null,
+        "reference_event_ids": [],
+        "risk_signal_id": "manual-exercise:demo-news-credit-v1",
+        "scenario_id": "demo-indian-credit-v1",
+        "shocks": [
+          {
+            "factor_id": "EQUITY-INDIA",
+            "horizon_days": 1,
+            "shock_type": "relative",
+            "unit": "percent",
+            "value": -4.0
+          },
+          {
+            "factor_id": "RATE-INR",
+            "horizon_days": 1,
+            "shock_type": "basis_point",
+            "unit": "basis_point",
+            "value": -10.0
+          },
+          {
+            "factor_id": "CREDIT-SPREAD",
+            "horizon_days": 1,
+            "shock_type": "basis_point",
+            "unit": "basis_point",
+            "value": 100.0
+          },
+          {
+            "factor_id": "USD-INR",
+            "horizon_days": 1,
+            "shock_type": "relative",
+            "unit": "percent",
+            "value": 2.0
+          },
+          {
+            "factor_id": "COMMODITY",
+            "horizon_days": 1,
+            "shock_type": "relative",
+            "unit": "percent",
+            "value": -3.0
+          },
+          {
+            "factor_id": "VOLATILITY",
+            "horizon_days": 1,
+            "shock_type": "volatility",
+            "unit": "volatility_point",
+            "value": 4.0
+          }
+        ]
+      },
+      "source_item_id": "demo-news-credit-v1",
+      "source_terms": "MIT; project-authored fictional exercise data"
+    }
+  ],
+  "schema_version": "demo-snapshot-manifest-v1",
+  "signal_status": "Unavailable; no RiskSignals, Confidence, Impact Score, or TriggerDecision emitted.",
+  "snapshot_id": "project-authored-demo-20261007-v1",
+  "source_terms": "MIT; project-authored fictional exercise data",
+  "time_semantics": "October 4 is fictional valuation/exercise time; authored and frozen October 7. No historical availability claim."
+}

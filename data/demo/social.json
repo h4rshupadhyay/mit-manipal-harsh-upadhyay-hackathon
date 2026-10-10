@@ -1,0 +1,37 @@
+{
+  "authored_at": "2026-10-07T00:00:00Z",
+  "evidence_kind": "fictional",
+  "generator_version": "demo-snapshot-generator-v1",
+  "items": [
+    {
+      "content_hash": "f9dd2e90d04ebaa8abd7c993f480e9d06539454ccc87c4d2591d07acaf9ad03d",
+      "license": "MIT; project-authored fictional exercise data",
+      "provenance": "project-authored fictional illustration; not historical availability; authored October 7 for an October 4 valuation exercise",
+      "provider": "project-authored-demo",
+      "published_at": "2026-10-07T00:00:00Z",
+      "retrieved_at": "2026-10-07T00:00:00Z",
+      "snapshot_id": "project-authored-demo-20261007-v1",
+      "source_item_id": "demo-social-rbi-v1",
+      "source_reference": "project-authored:demo-social-rbi-v1",
+      "source_type": "social",
+      "text": "Project-authored fictional social post. Fictional hypothetical RBI-policy exercise: assume tighter Indian rates and joint cross-asset stress. No actual RBI decision or observed market response is reported."
+    },
+    {
+      "content_hash": "a127e09a4e10d86118442b075efdc29fd3b41746ab5d7681811a11a4cd8e2fd7",
+      "license": "MIT; project-authored fictional exercise data",
+      "provenance": "project-authored fictional illustration; not historical availability; authored October 7 for an October 4 valuation exercise",
+      "provider": "project-authored-demo",
+      "published_at": "2026-10-07T00:00:00Z",
+      "retrieved_at": "2026-10-07T00:00:00Z",
+      "snapshot_id": "project-authored-demo-20261007-v1",
+      "source_item_id": "demo-social-credit-v1",
+      "source_reference": "project-authored:demo-social-credit-v1",
+      "source_type": "social",
+      "text": "Project-authored fictional social post. Fictional hypothetical Indian credit-stress exercise: an invented Indian infrastructure obligor faces financing strain. No real institution default or observed market response is reported."
+    }
+  ],
+  "schema_version": "demo-source-bundle-v1",
+  "snapshot_id": "project-authored-demo-20261007-v1",
+  "source_terms": "MIT; project-authored fictional exercise data",
+  "source_type": "social"
+}
