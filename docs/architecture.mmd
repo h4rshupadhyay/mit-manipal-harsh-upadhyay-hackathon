@@ -1,23 +1,24 @@
-%% Artifact: financial-risk-architecture-v2; project-authored, MIT.
+%% Artifact: financial-risk-architecture-v3; project-authored, MIT.
 %% Authored 2026-10-10; implementation baseline 6b87238 plus Tasks34–38.
-%% Render: Mermaid CLI11.12.0, Chrome headless, white background, scale2.
+%% Render: Mermaid CLI11.12.0 with ELK layout, Chrome headless, white background, scale2.
 %% Optional portable render (requires Chrome): npx --yes --package @mermaid-js/mermaid-cli@11.12.0 mmdc -i docs/architecture.mmd -o docs/architecture.png -w 2000 -s 2 -b white
 %% Source is an architecture description, not empirical runtime evidence.
-flowchart TB
+%%{init: {"layout": "elk"}}%%
+flowchart LR
   subgraph local["One local Python deployment"]
     providers["Optional acquisition adapters<br/>GDELT · local Social CSV<br/>GDELT network only on explicit refresh"]
     data["1 · Data Module<br/>Explicit refresh / offline replay<br/>Normalization · story clustering · DuckDB"]
     snapshot[("Immutable provider snapshot store<br/>Stored raw provider envelopes<br/>Hashes · terms · UTC times")]
     risk["2 · Risk Engine<br/>Entity linking · local NLP<br/>Historical analogues · calibrated Confidence<br/>Reference Basket → Impact Score"]
     stress["3 · Stress Engine<br/>Validated Joint Shock Vector<br/>Deterministic asset valuation<br/>Loss attribution · supported coverage"]
-  inputs["Versioned valuation inputs<br/>Synthetic Portfolio + MarketSnapshot<br/>Explicit StressScenario"]
+    inputs["Versioned valuation inputs<br/>Synthetic Portfolio + MarketSnapshot<br/>Explicit StressScenario"]
     backtest["4 · Backtest Module<br/>Nested chronological folds + embargo<br/>Candidate / held-out policy selection<br/>Training-only fit / locked restore<br/>One final attempt"]
     runtime["ProductionCandidateFitter<br/>Verified local models + training evidence<br/>Immutable fitted runtime state"]
     api["FastAPI · explicit AppContainer<br/>Signals · Stress Tests · Backtest evidence<br/>TriggerPolicy gates remain explicit"]
-  artifacts[("Versioned evaluation artifacts<br/>Selected configuration · Impact cutpoints<br/>Development audit · final report when run")]
-  dashboard["Streamlit · explicit DashboardEvidence<br/>Signal Monitor · Portfolio Stress · Backtest Evidence"]
-  manual_inputs["Project-authored manual inputs<br/>Fictional Source Items + scenarios"]
-  manual["Available offline manual exercise<br/>Hypothetical original + override scenarios<br/>No Risk Signal or automatic trigger"]
+    artifacts[("Versioned evaluation artifacts<br/>Selected configuration · Impact cutpoints<br/>Development audit · final report when run")]
+    dashboard["Streamlit · explicit DashboardEvidence<br/>Signal Monitor · Portfolio Stress · Backtest Evidence"]
+    manual_inputs["Project-authored manual inputs<br/>Fictional Source Items + scenarios"]
+    manual["Available offline manual exercise<br/>Hypothetical original + override scenarios<br/>No Risk Signal or automatic trigger"]
   end
 
   evidence["Empirical prerequisites still missing<br/>Required for empirical runtime<br/>Verified FinBERT / DeBERTa snapshots<br/>Historical evidence + independent labels"]

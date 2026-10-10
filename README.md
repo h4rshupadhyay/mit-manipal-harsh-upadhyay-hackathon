@@ -43,13 +43,13 @@ source = Path("docs/architecture.mmd")
 png = Path("docs/architecture.png")
 metadata = {
     "Title": "Financial Risk Engine architecture",
-    "ArtifactVersion": "financial-risk-architecture-v2",
+    "ArtifactVersion": "financial-risk-architecture-v3",
     "Source": "docs/architecture.mmd",
     "SourceSHA256": sha256(source.read_bytes()).hexdigest(),
     "Author": "Harsh Upadhyay; AI-assisted rendering",
     "AuthoredAt": "2026-10-10",
     "SourceTerms": "MIT; project-authored diagram",
-    "Renderer": "Mermaid CLI 11.12.0; Chrome headless; scale 2; white background",
+    "Renderer": "Mermaid CLI 11.12.0; ELK layout; Chrome headless; scale 2; white background",
     "ImplementationBaseline": "6b87238 plus Tasks 34-38",
 }
 info = PngImagePlugin.PngInfo()
