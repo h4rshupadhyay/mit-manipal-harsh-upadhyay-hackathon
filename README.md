@@ -1,79 +1,61 @@
-# Financial Risk Engine - S&P Global & Crisil Campus Hackathon
+# Financial Risk Engine — S&P Global & Crisil Campus Hackathon
 
 **Candidate Name:** Harsh Upadhyay<br>
 **College Email ID:** harsh10.mitmpl2024@learner.manipal.edu<br>
 **College / Campus:** Manipal Institute of Technology, Manipal<br>
-**Demo Video Link:** To be added before final submission<br>
-**Slide Deck Link (if hosted externally):** Not hosted externally; the final deck will be committed at `docs/presentation.pdf`
-
-> Development status: architecture and implementation plan approved; application implementation is in progress.
+**Demo Video Link:** Pending final submission<br>
+**Slide Deck Link (if hosted externally):** Not hosted externally; a deck is pending final submission.
 
 ## 1. Project Overview / Problem Statement & Approach
 
-Financial institutions need to turn fast-moving news and social-media text into risk information that a portfolio analyst can inspect and act on. This project builds a local AI/NLP Risk Engine that ingests two text-source types, links events to portfolio entities, and emits machine-readable Sentiment Score, Event Classification, Impact Score, Confidence, evidence, provenance, and version metadata.
+Financial institutions need to connect fast-moving news and social text to inspectable portfolio risk. This local prototype defines a **Source Item** with provenance, interprets it as an entity-linked **Risk Signal**, and applies a joint **Stress Scenario** to a fictional wholesale-banking **Synthetic Portfolio**. The selected application is strategic portfolio stress testing. The intended full chain includes sentiment, one of eight Event Classes, historical analogues, a portfolio-independent Impact Score, calibrated Confidence, Portfolio Materiality, and Action Priority. These are separate fields with different meanings.
 
-The selected downstream application is Module B: strategic portfolio stress testing. Impact is not assigned by an LLM or a subjective weighting formula. The system uses historical event studies, matched joint market-shock scenarios, a fixed cross-asset reference basket, and empirical severity deciles. High-impact eligible signals can propose an auditable scenario for a synthetic wholesale-banking portfolio, with before/after value and attribution by asset, sector, region, obligor, and factor.
-
-The judged workflow is designed to run locally and offline from immutable snapshots. Online refreshes are optional, no paid API is required, and deterministic financial calculations remain outside the language-model path.
+The available demonstration exercises deterministic portfolio valuation from frozen, project-authored hypothetical inputs. It does **not** emit a Risk Signal or establish historical predictive performance. The full offline replay and locked Backtest remain unavailable until authentic model snapshots, licensed historical observations, independently labeled outcomes, and frozen evaluation artifacts are supplied.
 
 ## 2. Architecture & Tech Stack
 
-The application is a single local Python deployment with four core modules:
+The Python code has four typed module seams: **Data** stores and replays immutable Source Item snapshots; **Risk Engine** links entities, interprets text, matches historical analogues, and estimates Impact and Confidence; **Stress Engine** applies complete factor shocks and attributes revaluation; **Backtest** implements chronological development selection and a locked final evaluation protocol. Financial calculations and policy gates are deterministic. The manual demo calls the production Stress Engine directly with governed hypothetical scenarios.
 
-1. **Data Module:** GDELT news and historical social replay normalized into immutable source snapshots.
-2. **Risk Engine:** local entity linking, financial sentiment, fixed-taxonomy event classification, historical analogues, Impact Score, and calibrated Confidence.
-3. **Stress Engine:** validated joint factor shocks and transparent asset-specific portfolio valuation.
-4. **Backtest Module:** leakage-safe chronological evaluation using the same production interfaces.
+Python 3.12, Pydantic, DuckDB, Polars, NumPy/SciPy/statsmodels/scikit-learn, PyTorch/Transformers, FastAPI, Streamlit, and Plotly are declared in [requirements.txt](requirements.txt). The FastAPI `create_app` function requires a supplied `AppContainer`; the Streamlit `render_app` function requires supplied `DashboardEvidence` for substantive views. They are composition interfaces, not a configured hosted service or a standalone full-replay launch command.
 
-The analyst interface will use FastAPI for machine-readable output and Streamlit for Signal Monitor, Portfolio Stress, and Backtest Evidence views.
-
-**Planned stack:** Python 3.12, Pydantic, FastAPI, Streamlit, DuckDB, Polars, NumPy, SciPy, statsmodels, scikit-learn, PyTorch/Transformers, Plotly, pytest, Hypothesis, Ruff, and mypy.
-
-- [Approved system design](docs/superpowers/specs/2026-10-04-financial-risk-engine-design.md)
-- [Implementation plan](docs/superpowers/plans/2026-10-04-financial-risk-engine.md)
-- [Development, commit, push, and resume workflow](docs/development-workflow.md)
-- The final high-resolution diagram will be committed at `docs/architecture.png`.
+[Approved design](docs/superpowers/specs/2026-10-04-financial-risk-engine-design.md) · [implementation plan](docs/superpowers/plans/2026-10-04-financial-risk-engine.md) · [canonical methodology](docs/methodology.md)
 
 ## 3. Dataset Used
 
-- **News:** GDELT live refreshes and frozen snapshots for deterministic replay.
-- **Social text:** project-authored redistributable demonstration posts plus separately acquired FiQA/StockNet evaluation inputs used only under their source terms; restricted raw text will not be committed.
-- **Market factors:** committed or reproducibly acquired public/rights-cleared end-of-day factor observations used for event studies and joint shock vectors.
-- **Portfolio:** a fixed-seed synthetic portfolio of approximately 60 loans, bonds, and derivatives spanning the United States, Europe, India, and Asia-Pacific.
+The reproducible manual exercise uses four fictional news-style/social Source Items, three one-day hypothetical joint-shock scenarios, and a fixed-seed 60-position Synthetic Portfolio of loans, bonds, and derivatives with global and India exposures. All committed exercise text, market levels, and sensitivities are project-authored, under the repository's MIT terms. The [snapshot manifest](data/manifests/demo-snapshot.json) records identities, source terms, timestamps, units, versions, and hashes; the [golden output](tests/golden/demo-output.json) records the actual calculated Stress Results. Source authorship on 2026-10-07 and the fictional 2026-10-04 valuation time must not be interpreted as historical availability.
 
-The project uses no confidential S&P Global, Crisil, client, or proprietary institutional data. Dataset licenses, hashes, transformations, vintages, and assumptions will be recorded under `data/manifests/` and `THIRD_PARTY_NOTICES.md`.
+GDELT news, FiQA/StockNet social material, and observed market factors are potential **separately acquired** inputs for empirical evaluation, subject to source terms and provenance checks. They are not in the committed manual exercise or a completed historical calibration bundle. No S&P Global, Crisil, client, or proprietary institutional data is used. See [third-party notices](THIRD_PARTY_NOTICES.md).
 
 ## 4. Quickstart & Installation
 
-Runtime: Python 3.12 on Linux; CPU execution is supported, with optional NVIDIA GPU acceleration.
-
-The executable application is currently under construction. The final evaluator workflow will be:
+Supported path: Linux CPU with Python 3.12. From the repository root, with Python 3.12 available as `python3.12`:
 
 ```bash
-git clone git@github.com:h4rshupadhyay/mit-manipal-harsh-upadhyay-hackathon.git
-cd mit-manipal-harsh-upadhyay-hackathon
 python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-python scripts/run_demo.py
+python -m pip install -r requirements.txt
+python -m pip install --no-deps -e .
+python scripts/run_demo.py --manual-exercise
 ```
 
-The final judged demo will replay a committed snapshot and will not require network access or paid credentials.
+The last command writes one JSON document to standard output containing the verified snapshot identity, fictional Source Items, event-to-case mapping, three Stress Results, coverage, attribution, and version metadata. It uses the committed inputs and makes no network refresh. `python scripts/run_demo.py` requests **full replay**; it currently returns a structured `unavailable` response with exit code 2 because the required empirical/model bundle is missing. The default refusal is intentional. The [results record](docs/results.md) describes the separately gated development and final-evaluation commands; its named local input paths are templates, not supplied files.
 
 ## 5. Key Results & Domain Impact
 
-The finished prototype will demonstrate one traceable chain from news/social text to a structured Risk Signal, an evidence-backed joint shock scenario, portfolio revaluation, loss attribution, and historical validation. Impact Score, model Confidence, current-portfolio Materiality, and Action Priority remain separate so analysts can distinguish market severity from reliability and exposure.
+On the fictional USD 390,418,231.60 base portfolio, the manual exercise calculates a USD 1,633,100.88 loss (0.4183%) for the RBI-policy illustration, USD 3,253,604.63 (0.8334%) for its analyst override, and USD 4,944,847.17 (1.2666%) for fictional Indian credit stress. All 60 authored positions have supported sensitivities in this exercise; asset, sector, geography, obligor, and factor attribution reconcile to each loss. The override retains its parent and reason. Full-precision values and assumptions are in [measured exercise results](docs/results.md) and the golden JSON.
 
-Final measured classification, calibration, severity-ranking, stressed-P&L, coverage, and alert-policy results will be reported here and in `docs/results.md` only after the locked chronological evaluation has run. No target metric is presented as an achieved result before that evaluation.
+This demonstrates a traceable Stress Test calculation for a diversified fictional book, including India exposure. It does not measure real portfolio coverage, model reliability, event-classification accuracy, calibrated Impact or Confidence, trigger quality, or investment outcomes. The final historical Backtest has not run, and no final BacktestReport is published.
+
+## 6. Limitations
+
+The scenario shocks are authored assumptions, not observed market moves or forecasts. Loan, bond, and derivative valuations are transparent sensitivity approximations, not full institutional pricing. The present demo cannot establish causation, empirical severity calibration, automatic-action thresholds, historical ranking, or generalization to live portfolios. Real-data use requires source rights, availability timestamps, complete joint observations, independent labels, verified local models, and an untouched final period. Unsupported or missing evidence is surfaced rather than silently filled.
 
 ## Submission Artifacts
 
-- Source code and reproducible demo data: this repository
-- Architecture diagram: `docs/architecture.png` before final submission
-- Presentation deck: `docs/presentation.pdf` before final submission
-- Demo video: ten-minute unlisted YouTube link before final submission
-- License: [MIT](LICENSE)
+- Source code: this repository; [reproducible synthetic snapshot](data/manifests/demo-snapshot.json) and [golden Stress Results](tests/golden/demo-output.json)
+- [Methodology](docs/methodology.md), [results and readiness](docs/results.md), [third-party notices](THIRD_PARTY_NOTICES.md), and [MIT license](LICENSE)
+- Architecture diagram, presentation deck, and demo video: pending separate submission tasks
 
 ## AI Assistance Disclosure
 
-AI-assisted tools are being used for research synthesis, design review, implementation support, testing, and documentation. The candidate remains responsible for the design decisions, source verification, code, evaluation, and final submission. Reused code, datasets, models, and methodological sources will be attributed explicitly.
+AI-assisted tools supported research synthesis, design review, implementation, testing, and documentation. The candidate remains responsible for source verification, design choices, code, evaluation, and submission. No model-generated financial number is substituted for deterministic valuation or a measured result. Third-party software, model cards, datasets, methods, and inspiration are distinguished in the [notices](THIRD_PARTY_NOTICES.md).
