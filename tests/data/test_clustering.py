@@ -1,5 +1,7 @@
 import hashlib
 from datetime import datetime, timedelta, timezone
+from itertools import permutations
+from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic import ValidationError
@@ -326,3 +328,75 @@ def test_clustering_precomputes_reference_and_token_features_once(
     cluster_stories(items, CONFIG)
 
     assert calls == {"references": len(items), "tokens": len(items)}
+
+
+def test_repeated_hour_clusters_use_utc_order_and_restore_json() -> None:
+    zone = ZoneInfo("America/New_York")
+    early = make_item(
+        "z-early", text="exact syndicated story",
+        published_at=datetime(2020, 11, 1, 1, 45, tzinfo=zone, fold=0),
+    )
+    late = make_item(
+        "a-late", text="exact syndicated story",
+        published_at=datetime(2020, 11, 1, 1, 30, tzinfo=zone, fold=1),
+    )
+    independent = make_item(
+        "middle", text="unrelated commodity dividend",
+        published_at=datetime(2020, 11, 1, 1, 50, tzinfo=zone, fold=0),
+    )
+    serializations = set()
+    for order in permutations((late, independent, early)):
+        clusters = cluster_stories(order, CONFIG)
+        assert [cluster.representative_source_item_id for cluster in clusters] == [
+            "z-early", "middle"
+        ]
+        assert [item.source_item_id for item in clusters[0].items] == ["z-early", "a-late"]
+        assert clusters[0].event_time.isoformat() == "2020-11-01T01:45:00-04:00"
+        assert clusters[0].items[1].published_at.fold == 1
+        for cluster in clusters:
+            encoded = cluster.model_dump_json()
+            assert StoryCluster.model_validate_json(encoded).model_dump_json() == encoded
+        serializations.add(tuple(cluster.model_dump_json() for cluster in clusters))
+    assert len(serializations) == 1
+
+
+@pytest.mark.parametrize(
+    "month,day,first_minute,second_hour,second_minute,fold,microsecond,want",
+    [
+        (3, 8, 30, 3, 15, 0, 0, 1),
+        (3, 8, 30, 3, 30, 0, 0, 1),
+        (3, 8, 30, 3, 30, 0, 1, 2),
+        (11, 1, 45, 1, 30, 1, 0, 1),
+        (11, 1, 45, 1, 45, 1, 0, 1),
+        (11, 1, 45, 1, 45, 1, 1, 2),
+    ],
+)
+def test_fuzzy_window_measures_elapsed_utc_at_dst_boundaries(
+    month, day, first_minute, second_hour, second_minute, fold, microsecond, want
+) -> None:
+    zone = ZoneInfo("America/New_York")
+    items = (
+        make_item("first", text="central bank inflation rates alpha",
+                  published_at=datetime(2020, month, day, 1, first_minute, tzinfo=zone)),
+        make_item("second", text="central bank inflation rates beta",
+                  published_at=datetime(2020, month, day, second_hour, second_minute,
+                                        microsecond=microsecond, tzinfo=zone, fold=fold)),
+    )
+    config = ClusteringConfig(similarity_threshold=0.6, max_time_delta_hours=1)
+    for order in permutations(items):
+        assert len(cluster_stories(order, config)) == want
+        restored = tuple(SourceItem.model_validate_json(item.model_dump_json()) for item in order)
+        assert [c.model_dump_json() for c in cluster_stories(restored, config)] == [
+            c.model_dump_json() for c in cluster_stories(order, config)
+        ]
+
+
+def test_story_cluster_rejects_event_time_at_wrong_fold() -> None:
+    zone = ZoneInfo("America/New_York")
+    item = make_item("first", text="story", published_at=datetime(2020, 11, 1, 1, 30,
+                                                                 tzinfo=zone, fold=0))
+    cluster = cluster_stories((item,), CONFIG)[0]
+    payload = cluster.model_dump()
+    payload["event_time"] = item.published_at.replace(fold=1)
+    with pytest.raises(ValidationError, match="earliest publication"):
+        StoryCluster.model_validate(payload)

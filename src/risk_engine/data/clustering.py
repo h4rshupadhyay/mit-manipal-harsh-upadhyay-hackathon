@@ -7,6 +7,7 @@ import json
 import re
 from collections import defaultdict
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Annotated
 from urllib.parse import SplitResult, parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -31,6 +32,10 @@ _TRACKING_PARAMETERS = {"fbclid", "gclid"}
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 
 
+def _publication_key(item: SourceItem) -> tuple[datetime, str]:
+    return item.published_at.astimezone(UTC), item.source_item_id
+
+
 class StoryCluster(BaseModel):
     """One deterministic component of duplicate or revised source stories."""
 
@@ -51,14 +56,14 @@ class StoryCluster(BaseModel):
         if self.source_item_ids != canonical_source_item_ids:
             raise ValueError("source_item_ids must be unique, complete, and sorted")
         canonical_items = tuple(
-            sorted(self.items, key=lambda item: (item.published_at, item.source_item_id))
+            sorted(self.items, key=_publication_key)
         )
         if self.items != canonical_items:
             raise ValueError("cluster items must use canonical publication and ID order")
         representative = canonical_items[0]
         if self.representative_source_item_id != representative.source_item_id:
             raise ValueError("representative must be the earliest canonical source item")
-        if self.event_time != representative.published_at:
+        if self.event_time.astimezone(UTC) != representative.published_at.astimezone(UTC):
             raise ValueError("event_time must be the earliest publication time")
         if self.cluster_id != _cluster_id(canonical_source_item_ids):
             raise ValueError("cluster_id must be derived from canonical source_item_ids")
@@ -184,10 +189,7 @@ def cluster_stories(
 
     time_ordered_indices = sorted(
         range(len(ordered_items)),
-        key=lambda index: (
-            ordered_items[index].published_at,
-            ordered_items[index].source_item_id,
-        ),
+        key=lambda index: _publication_key(ordered_items[index]),
     )
     max_delta_seconds = config.max_time_delta_hours * 3600
     for position, first_index in enumerate(time_ordered_indices):
@@ -195,7 +197,9 @@ def cluster_stories(
         for second_position in range(position + 1, len(time_ordered_indices)):
             second_index = time_ordered_indices[second_position]
             second = ordered_items[second_index]
-            delta_seconds = (second.published_at - first.published_at).total_seconds()
+            delta_seconds = (
+                second.published_at.astimezone(UTC) - first.published_at.astimezone(UTC)
+            ).total_seconds()
             if delta_seconds > max_delta_seconds:
                 break
             similarity = _jaccard_similarity(
@@ -212,7 +216,7 @@ def cluster_stories(
     clusters: list[StoryCluster] = []
     for members in components.values():
         ordered_members = tuple(
-            sorted(members, key=lambda item: (item.published_at, item.source_item_id))
+            sorted(members, key=_publication_key)
         )
         source_item_ids = tuple(sorted(item.source_item_id for item in members))
         representative = ordered_members[0]
@@ -225,7 +229,9 @@ def cluster_stories(
                 items=ordered_members,
             )
         )
-    return sorted(clusters, key=lambda cluster: (cluster.event_time, cluster.cluster_id))
+    return sorted(
+        clusters, key=lambda cluster: (cluster.event_time.astimezone(UTC), cluster.cluster_id)
+    )
 
 
 __all__ = ["StoryCluster", "cluster_stories"]

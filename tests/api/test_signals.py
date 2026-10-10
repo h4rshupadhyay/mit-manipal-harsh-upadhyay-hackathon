@@ -5,9 +5,10 @@ import json
 import runpy
 import socket
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,12 +22,16 @@ from risk_engine.api.dependencies import (
     LocalBacktestArtifactReader,
     VersionConflictError,
 )
+from risk_engine.config import ClusteringConfig
 from risk_engine.data.duckdb_store import DuckDbSnapshotStore
 from risk_engine.data.interfaces import ProviderRequest, RawEnvelope
 from risk_engine.data.module import DataModule
 from risk_engine.domain import RiskSignal, SourceItem
+from risk_engine.risk.confidence import ConfidenceCalibrator
+from tests.risk.test_risk_engine import build_engine, calibration_evidence, source
 
 TIME = datetime(2026, 1, 10, tzinfo=timezone.utc)
+CLUSTERING = ClusteringConfig(similarity_threshold=1, max_time_delta_hours=1)
 EXPECTED_SIGNAL = {
     "signal_id": "signal:synthetic-1",
     "source_item_id": "source-1",
@@ -112,16 +117,18 @@ def setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         snapshots.append(store.write(envelope).snapshot_id)
 
     def normalize(envelope: RawEnvelope) -> list[SourceItem]:
+        source_id = envelope.response_metadata["source_id"]
+        text = "Alpha Bank failed" if source_id == "source-1" else "Independent commodity dividend"
         return [
             SourceItem(
                 source_item_id=envelope.response_metadata["source_id"],
                 source_type="news",
                 provider="synthetic",
-                text="Alpha Bank failed",
+                text=text,
                 published_at=TIME,
                 retrieved_at=TIME,
-                source_reference="synthetic:story",
-                content_hash=envelope.content_hash,
+                source_reference=f"synthetic:{source_id}",
+                content_hash=hashlib.sha256(text.encode()).hexdigest(),
                 snapshot_id=hashlib.sha256(envelope.canonical_manifest_bytes()).hexdigest(),
                 provenance="project-authored synthetic API fixture",
                 license="MIT",
@@ -136,7 +143,8 @@ def setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     data = DataModule(store=store, normalizers={"synthetic": normalize})
     engine = LocalRiskEngine()
     repository = InMemorySignalRepository()
-    app = create_app(AppContainer(data=data, risk_engine=engine, signals=repository))
+    app = create_app(AppContainer(data=data, risk_engine=engine, signals=repository,
+                                  clustering=CLUSTERING))
     with TestClient(app, raise_server_exceptions=False) as client:
         yield client, engine, repository, snapshots
 
@@ -171,12 +179,12 @@ def test_exact_risk_signal_json_is_stored_without_processing_get(setup) -> None:
     assert stored.as_of == TIME
 
 
-def test_multi_snapshot_replay_preserves_explicit_order(setup) -> None:
+def test_multi_snapshot_replay_uses_canonical_story_order(setup) -> None:
     client, engine, _, snapshots = setup
     response = client.post("/v1/signals/analyze", json=request(list(reversed(snapshots))))
     assert response.status_code == 200
-    assert [signal["source_item_id"] for signal in response.json()] == ["source-2", "source-1"]
-    assert [item.snapshot_id for item in engine.calls[0][0]] == list(reversed(snapshots))
+    assert [signal["source_item_id"] for signal in response.json()] == ["source-1", "source-2"]
+    assert [item.snapshot_id for item in engine.calls[0][0]] == snapshots
 
 
 @pytest.mark.parametrize(
@@ -334,6 +342,190 @@ def test_unknown_stored_signal_is_missing_artifact(setup) -> None:
     _, _, repository, _ = setup
     with pytest.raises(ArtifactNotFoundError):
         repository.get("missing")
+
+
+class SnapshotItems:
+    def __init__(self, items):
+        self.items = items
+
+    def replay(self, snapshot_id):
+        return [item for item in self.items if item.snapshot_id == snapshot_id]
+
+
+def direct_analysis(container, *, as_of=TIME):
+    endpoint = next(
+        route.endpoint for route in create_app(container).routes
+        if getattr(route, "path", None) == "/v1/signals/analyze"
+    )
+    return endpoint(AnalyzeSignalsRequest(snapshot_ids=("snapshot",), as_of=as_of), container)
+
+
+def grouped_container(items, *, engine=None):
+    if engine is None:
+        engine, _, _ = build_engine(ConfidenceCalibrator.fit(calibration_evidence()))
+    return AppContainer(
+        data=SnapshotItems(items), risk_engine=engine, signals=InMemorySignalRepository(),
+        clustering=CLUSTERING,
+    )
+
+
+@pytest.mark.parametrize("revision", [False, True])
+@pytest.mark.parametrize("multiple_pairs", [False, True])
+def test_analysis_groups_stories_once_preserving_pairs_and_complete_audit(
+    revision, multiple_pairs
+):
+    text = "Beta Bank and Alpha Bank failed. Beta Bank failed." if multiple_pairs else (
+        "Beta Bank failed."
+    )
+    first = source(text, "z-first").model_copy(update={
+        "snapshot_id": "snapshot", "source_reference": "https://publisher.test/story"
+    })
+    copy = source("Alpha Bank rose." if revision else text, "a-copy",
+                  published_at=TIME - timedelta(hours=1), retrieved_at=TIME).model_copy(update={
+        "snapshot_id": "snapshot",
+        "source_reference": "https://publisher.test/story?utm_source=revised" if revision else (
+            "https://syndicator.test/copy"
+        ),
+        "provider": "second-publisher", "license": "CC0", "provenance": "second source terms",
+    })
+    encoded = []
+    for items in ((copy, first), (first, copy)):
+        container = grouped_container(items)
+        signals = direct_analysis(container)
+        assert len(signals) == (3 if multiple_pairs else 1)
+        assert {signal.source_item_id for signal in signals} == {"z-first"}
+        assert container.signals.list() == signals
+        for signal in signals:
+            manifest = json.loads(signal.versions.snapshot_version)
+            assert manifest["manifest_version"] == "risk-engine-snapshot-manifest-v1"
+            assert manifest["source_items"] == [
+                item.model_dump(mode="json", exclude={"text"}) for item in (first, copy)
+            ]
+        encoded.append([signal.model_dump_json() for signal in signals])
+    assert encoded[0] == encoded[1]
+
+
+def test_analysis_refuses_missing_clustering_before_inference_or_publication() -> None:
+    engine = LocalRiskEngine()
+    item = source("Beta Bank failed.").model_copy(update={"snapshot_id": "snapshot"})
+    container = AppContainer(data=SnapshotItems((item,)), risk_engine=engine,
+                             signals=InMemorySignalRepository())
+    with pytest.raises(ValueError, match="AppContainer.clustering"):
+        direct_analysis(container)
+    assert engine.calls == []
+    assert container.signals.list() == []
+
+
+def test_analysis_validates_late_nonrepresentative_members_before_inference() -> None:
+    zone = ZoneInfo("America/New_York")
+    cutoff = datetime(2026, 11, 1, 1, 45, tzinfo=zone, fold=0)
+    first = source("Beta Bank failed.", "first").model_copy(update={"snapshot_id": "snapshot"})
+    late = source("Beta Bank failed.", "late",
+                  published_at=datetime(2026, 11, 1, 1, 15, tzinfo=zone, fold=1),
+                  retrieved_at=datetime(2026, 11, 1, 1, 30, tzinfo=zone, fold=1)).model_copy(
+                      update={"snapshot_id": "snapshot"}
+                  )
+    engine = LocalRiskEngine()
+    container = grouped_container((first, late), engine=engine)
+    with pytest.raises(ValueError, match="Source Item late.*as_of"):
+        direct_analysis(container, as_of=cutoff)
+    assert engine.calls == []
+    assert container.signals.list() == []
+
+
+def test_analysis_rejects_returned_signals_outside_selected_representatives() -> None:
+    class WrongSourceEngine(LocalRiskEngine):
+        def analyze(self, items, as_of):
+            return [RiskSignal.model_validate(EXPECTED_SIGNAL)]
+
+    item = source("Beta Bank failed.", "representative").model_copy(
+        update={"snapshot_id": "snapshot"}
+    )
+    container = grouped_container((item,), engine=WrongSourceEngine())
+    with pytest.raises(ValueError, match="representative"):
+        direct_analysis(container)
+    assert container.signals.list() == []
+
+
+def test_analysis_revalidates_caller_owned_clustering_configuration() -> None:
+    engine = LocalRiskEngine()
+    container = AppContainer(
+        data=SnapshotItems(()), risk_engine=engine, signals=InMemorySignalRepository(),
+        clustering=CLUSTERING.model_copy(update={"max_time_delta_hours": 0}),
+    )
+    with pytest.raises(ValidationError):
+        direct_analysis(container)
+    assert engine.calls == []
+    assert container.signals.list() == []
+
+
+def test_grouped_analysis_uses_utc_representative_and_retains_offset_timestamps() -> None:
+    zone = ZoneInfo("America/New_York")
+    early = source("Beta Bank failed.", "z-early",
+                   published_at=datetime(2026, 11, 1, 1, 45, tzinfo=zone, fold=0),
+                   retrieved_at=datetime(2026, 11, 1, 1, 50, tzinfo=zone, fold=0)).model_copy(
+                       update={"snapshot_id": "snapshot"}
+                   )
+    late = source("Beta Bank failed.", "a-late",
+                  published_at=datetime(2026, 11, 1, 1, 30, tzinfo=zone, fold=1),
+                  retrieved_at=datetime(2026, 11, 1, 1, 40, tzinfo=zone, fold=1)).model_copy(
+                      update={"snapshot_id": "snapshot"}
+                  )
+    cutoff = datetime(2026, 11, 1, 1, 45, tzinfo=zone, fold=1)
+    container = grouped_container((late, early))
+    signals = direct_analysis(container, as_of=cutoff)
+    assert len(signals) == 1
+    assert signals[0].source_item_id == "z-early"
+    manifest = json.loads(signals[0].versions.snapshot_version)
+    assert [item["published_at"] for item in manifest["source_items"]] == [
+        "2026-11-01T01:45:00-04:00", "2026-11-01T01:30:00-05:00"
+    ]
+    assert [item["retrieved_at"] for item in manifest["source_items"]] == [
+        "2026-11-01T01:50:00-04:00", "2026-11-01T01:40:00-05:00"
+    ]
+
+
+def test_singleton_analysis_preserves_existing_serialized_signal_bytes() -> None:
+    item = source("Alpha Bank failed.").model_copy(update={"snapshot_id": "snapshot"})
+    container = grouped_container((item,), engine=LocalRiskEngine())
+    signals = direct_analysis(container)
+    expected = RiskSignal.model_validate(EXPECTED_SIGNAL).model_dump_json()
+    assert signals[0].model_dump_json() == expected
+
+
+def test_grouped_analysis_rejects_forged_representative_manifest() -> None:
+    engine, _, _ = build_engine(ConfidenceCalibrator.fit(calibration_evidence()))
+
+    class WrongManifestEngine:
+        def analyze(self, items, as_of):
+            signals = engine.analyze(items, as_of)
+            result = []
+            for signal in signals:
+                manifest = json.loads(signal.versions.snapshot_version)
+                manifest["source_items"][0]["snapshot_id"] = "wrong-snapshot"
+                result.append(signal.model_copy(update={"versions": signal.versions.model_copy(
+                    update={"snapshot_version": json.dumps(manifest)}
+                )}))
+            return result
+
+    items = tuple(source("Beta Bank failed.", identity).model_copy(
+        update={"snapshot_id": "snapshot"}
+    ) for identity in ("first", "second"))
+    container = grouped_container(items, engine=WrongManifestEngine())
+    with pytest.raises(ValueError, match="snapshot identity differs"):
+        direct_analysis(container)
+    assert container.signals.list() == []
+
+
+def test_grouped_analysis_validates_corrupt_nonrepresentative_source_before_inference() -> None:
+    first = source("Beta Bank failed.", "first").model_copy(update={"snapshot_id": "snapshot"})
+    corrupt = first.model_copy(update={"source_item_id": "second", "content_hash": "bad-hash"})
+    engine = LocalRiskEngine()
+    container = grouped_container((first, corrupt), engine=engine)
+    with pytest.raises(ValidationError, match="content_hash"):
+        direct_analysis(container)
+    assert engine.calls == []
+    assert container.signals.list() == []
 
 
 def test_ready_backtest_reader_verifies_real_synthetic_development_and_final(tmp_path: Path):

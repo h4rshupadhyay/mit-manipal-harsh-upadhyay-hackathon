@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import (
     ROUND_HALF_EVEN,
     Context,
@@ -31,6 +31,8 @@ from risk_engine.api.dependencies import (
     StoredSignal,
     VersionConflictError,
 )
+from risk_engine.config import ClusteringConfig
+from risk_engine.data.clustering import cluster_stories
 from risk_engine.data.duckdb_store import SnapshotManifestError, SnapshotNotFoundError
 from risk_engine.domain import (
     BacktestReport,
@@ -44,6 +46,7 @@ from risk_engine.domain import (
     StressResult,
     StressScenario,
 )
+from risk_engine.risk.module import SnapshotManifest, SourceItemIdentity
 from risk_engine.risk.policy import ManualOverride, TriggerDecision
 from risk_engine.stress.shocks import normalize_scenario
 
@@ -384,15 +387,57 @@ def create_app(container: AppContainer) -> FastAPI:
     def analyze_signals(
         analysis: AnalyzeSignalsRequest, dependencies: ContainerDependency
     ) -> list[RiskSignal]:
+        if dependencies.clustering is None:
+            raise ValueError("analysis requires explicitly supplied AppContainer.clustering")
+        clustering = ClusteringConfig.model_validate(
+            dependencies.clustering.model_dump(mode="python")
+        )
         items: list[SourceItem] = []
+        cutoff = analysis.as_of.astimezone(UTC)
         for snapshot_id in analysis.snapshot_ids:
             replayed = dependencies.data.replay(snapshot_id)
             for original in replayed:
                 item = SourceItem.model_validate(original.model_dump(mode="python"))
                 if item.snapshot_id != snapshot_id:
                     raise ValueError("replayed Source Item snapshot identity mismatch")
+                if (
+                    item.published_at.astimezone(UTC) > cutoff
+                    or item.retrieved_at.astimezone(UTC) > cutoff
+                ):
+                    raise ValueError(
+                        f"Source Item {item.source_item_id} is unavailable by analysis as_of"
+                    )
                 items.append(item)
-        signals = dependencies.risk_engine.analyze(items, analysis.as_of)
+        clusters = cluster_stories(items, clustering)
+        selected = {cluster.representative_source_item_id: cluster for cluster in clusters}
+        signals: list[RiskSignal] = []
+        for produced in dependencies.risk_engine.analyze(
+            [cluster.items[0] for cluster in clusters], analysis.as_of
+        ):
+            signal = RiskSignal.model_validate(produced.model_dump(mode="python"))
+            if signal.source_item_id not in selected:
+                raise ValueError("Risk Signal must belong to a selected story representative")
+            cluster = selected[signal.source_item_id]
+            if len(cluster.items) > 1:
+                identities = tuple(
+                    SourceItemIdentity.model_validate(item.model_dump(exclude={"text"}))
+                    for item in cluster.items
+                )
+                original_manifest = SnapshotManifest.model_validate_json(
+                    signal.versions.snapshot_version
+                )
+                expected = SnapshotManifest(source_items=(identities[0],))
+                if original_manifest.model_dump(mode="json") != expected.model_dump(mode="json"):
+                    raise ValueError("Risk Signal snapshot identity differs from representative")
+                manifest = SnapshotManifest(source_items=identities)
+                signal = signal.model_copy(update={
+                    "versions": signal.versions.model_copy(update={
+                        "snapshot_version": json.dumps(
+                            manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+                        )
+                    })
+                })
+            signals.append(signal)
         record = AnalysisRecord(
             snapshot_ids=analysis.snapshot_ids, as_of=analysis.as_of, signals=tuple(signals)
         )

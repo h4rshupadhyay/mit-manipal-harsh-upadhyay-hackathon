@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal, Protocol
 
 from pydantic import AwareDatetime, Field, model_validator
@@ -311,8 +311,12 @@ class RiskEngine:
         source_items = tuple(
             SourceItem.model_validate(item.model_dump(mode="python")) for item in items
         )
+        cutoff = as_of.astimezone(UTC)
         for item in source_items:
-            if item.published_at > as_of or item.retrieved_at > as_of:
+            if (
+                item.published_at.astimezone(UTC) > cutoff
+                or item.retrieved_at.astimezone(UTC) > cutoff
+            ):
                 raise ValueError(
                     f"Source Item {item.source_item_id} is unavailable by analysis as_of"
                 )

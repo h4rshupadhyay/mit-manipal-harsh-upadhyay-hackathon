@@ -2,8 +2,9 @@
 
 import hashlib
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import ROUND_UP, Decimal, Inexact, Rounded, localcontext
+from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic import ValidationError
@@ -51,9 +52,15 @@ from risk_engine.impact.module import GovernedHypothetical, ImpactEstimator, Los
 from risk_engine.risk.module import RiskEngine
 from risk_engine.risk.policy import ManualOverride, TriggerPolicy
 from risk_engine.stress.module import StressEngine
-from tests.api.test_signals import EXPECTED_SIGNAL, TIME
+from tests.api.test_signals import (
+    EXPECTED_SIGNAL,
+    TIME,
+    direct_analysis,
+    grouped_container,
+)
 from tests.api.test_stress_and_backtests import Inputs
 from tests.impact.test_analogues import historical
+from tests.risk.test_risk_engine import source as risk_source
 
 
 def signal():
@@ -173,6 +180,97 @@ def test_signal_rejects_conflicting_or_unavailable_source_lineage(change):
         kwargs["snapshot_ids"] = ("snapshot-1", "snapshot-1")
     with pytest.raises(ValueError):
         monitor(**kwargs)
+
+
+def grouped_analysis(*, first=None, second=None, as_of=TIME):
+    first = first or risk_source("Beta Bank failed.", "source-first").model_copy(
+        update={"snapshot_id": "snapshot"}
+    )
+    second = second or risk_source("Beta Bank failed.", "source-second").model_copy(
+        update={"snapshot_id": "snapshot"}
+    )
+    signals = direct_analysis(grouped_container((first, second)), as_of=as_of)
+    assert len(signals) == 1
+    return AnalysisRecord(snapshot_ids=("snapshot",), as_of=as_of, signals=tuple(signals)), (
+        first,
+        second,
+    )
+
+
+def test_grouped_api_signal_reaches_monitor_with_complete_source_lineage():
+    record, sources = grouped_analysis()
+
+    view = build_signal_monitor(
+        record, sources=sources, snapshot_ids=("snapshot",), as_of=TIME, mode="snapshot"
+    )
+
+    assert view.status == "ready"
+    assert view.rows[0].source.source_item_id == "source-first"
+    assert json.loads(view.rows[0].signal.versions.snapshot_version)["source_items"] == [
+        item.model_dump(mode="json", exclude={"text"}) for item in sources
+    ]
+
+
+@pytest.mark.parametrize(
+    "change", ["missing_member", "mismatched_member", "duplicate_member", "order"]
+)
+def test_grouped_monitor_rejects_incomplete_or_noncanonical_member_lineage(change):
+    record, sources = grouped_analysis()
+    kwargs = {"sources": sources}
+    if change == "missing_member":
+        kwargs["sources"] = sources[:1]
+    elif change == "mismatched_member":
+        kwargs["sources"] = (sources[0], sources[1].model_copy(update={"license": "Other"}))
+    else:
+        signal_value = record.signals[0]
+        versions = signal_value.versions.model_dump()
+        manifest = json.loads(versions["snapshot_version"])
+        if change == "duplicate_member":
+            manifest["source_items"].append(manifest["source_items"][0])
+        else:
+            manifest["source_items"].reverse()
+        versions["snapshot_version"] = json.dumps(manifest)
+        tampered = signal_value.model_copy(
+            update={"versions": signal_value.versions.model_copy(update=versions)}
+        )
+        kwargs["analysis"] = AnalysisRecord(
+            snapshot_ids=record.snapshot_ids, as_of=record.as_of, signals=(tampered,)
+        )
+    with pytest.raises(ValueError):
+        build_signal_monitor(
+            kwargs.pop("analysis", record),
+            sources=kwargs["sources"],
+            snapshot_ids=("snapshot",),
+            as_of=TIME,
+            mode="snapshot",
+        )
+
+
+def test_grouped_monitor_checks_dst_fold_availability_by_utc_instant():
+    zone = ZoneInfo("America/New_York")
+    early = datetime(2026, 11, 1, 1, 15, tzinfo=zone, fold=0)
+    late = datetime(2026, 11, 1, 1, 0, tzinfo=zone, fold=1)
+    cutoff = datetime(2026, 11, 1, 1, 45, tzinfo=zone, fold=0)
+    route_cutoff = datetime(2026, 11, 1, 1, 45, tzinfo=zone, fold=1)
+    first = risk_source(
+        "Beta Bank failed.", "source-first", published_at=early, retrieved_at=early
+    ).model_copy(update={"snapshot_id": "snapshot"})
+    second = risk_source(
+        "Beta Bank failed.", "source-second", published_at=late, retrieved_at=late
+    ).model_copy(update={"snapshot_id": "snapshot"})
+    record, sources = grouped_analysis(first=first, second=second, as_of=route_cutoff)
+    earlier_record = AnalysisRecord(
+        snapshot_ids=record.snapshot_ids, as_of=cutoff, signals=record.signals
+    )
+
+    with pytest.raises(ValueError, match="availability"):
+        build_signal_monitor(
+            earlier_record,
+            sources=sources,
+            snapshot_ids=("snapshot",),
+            as_of=cutoff,
+            mode="snapshot",
+        )
 
 
 def stress_response(*, gain=False, manual=False, extra_attribution=False):

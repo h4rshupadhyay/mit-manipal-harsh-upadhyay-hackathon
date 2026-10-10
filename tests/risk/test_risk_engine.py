@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from hashlib import sha256
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -462,6 +463,51 @@ def test_source_publication_and_retrieval_must_be_available_by_as_of(
 
     assert matcher.calls == []
     assert estimator.calls == []
+
+
+@pytest.mark.parametrize("future_publication", [False, True])
+@pytest.mark.parametrize("utc_cutoff", [False, True])
+def test_repeated_hour_future_sources_fail_before_any_model_port(
+    calibrator, monkeypatch, future_publication, utc_cutoff
+) -> None:
+    zone = ZoneInfo("America/New_York")
+    cutoff = datetime(2026, 11, 1, 1, 45, tzinfo=zone, fold=0)
+    item = source(
+        "Beta Bank failed.", "late",
+        published_at=datetime(2026, 11, 1, 1, 15, tzinfo=zone,
+                              fold=int(future_publication)),
+        retrieved_at=datetime(2026, 11, 1, 1, 30, tzinfo=zone, fold=1),
+    )
+    engine, matcher, estimator = build_engine(calibrator)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("future Source Item reached a model port")
+
+    monkeypatch.setattr(engine._sentiment_model, "score", forbidden)
+    monkeypatch.setattr(engine._event_model, "classify", forbidden)
+    if utc_cutoff:
+        cutoff = cutoff.astimezone(timezone.utc)
+    with pytest.raises(ValueError, match="Source Item late.*as_of"):
+        engine.analyze((source("Alpha Bank failed."), item), cutoff)
+    assert matcher.calls == []
+    assert estimator.calls == []
+
+
+def test_repeated_hour_earlier_sources_retain_original_audit_timestamps(calibrator) -> None:
+    zone = ZoneInfo("America/New_York")
+    cutoff = datetime(2026, 11, 1, 1, 15, tzinfo=zone, fold=1)
+    item = source(
+        "Beta Bank failed.",
+        published_at=datetime(2026, 11, 1, 1, 45, tzinfo=zone, fold=0),
+        retrieved_at=datetime(2026, 11, 1, 1, 50, tzinfo=zone, fold=0),
+    )
+    engine, _, estimator = build_engine(calibrator)
+    signals = engine.analyze((item,), cutoff)
+    assert len(signals) == 1
+    identity = json.loads(signals[0].versions.snapshot_version)["source_items"][0]
+    assert identity["published_at"] == "2026-11-01T01:45:00-04:00"
+    assert identity["retrieved_at"] == "2026-11-01T01:50:00-04:00"
+    assert estimator.calls[0][1].isoformat() == cutoff.isoformat()
 
 
 def test_as_of_must_be_aware(calibrator: ConfidenceCalibrator) -> None:

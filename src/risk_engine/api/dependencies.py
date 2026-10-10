@@ -20,6 +20,7 @@ from risk_engine.backtest.module import (
     SelectedPayload,
     UnresolvedPayload,
 )
+from risk_engine.config import ClusteringConfig
 from risk_engine.domain import (
     BacktestReport,
     DomainModel,
@@ -213,6 +214,7 @@ class AppContainer:
     data: SnapshotReplayPort
     risk_engine: RiskEnginePort
     signals: SignalRepositoryPort
+    clustering: ClusteringConfig | None = None
     stress_engine: StressEnginePort | None = None
     trigger_policy: TriggerPolicyPort | None = None
     stress_inputs: StressInputsPort | None = None

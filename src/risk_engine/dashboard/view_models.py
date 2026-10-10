@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import (
     ROUND_HALF_EVEN,
     Context,
@@ -49,7 +49,12 @@ from risk_engine.domain import (
 )
 from risk_engine.impact.analogues import HistoricalAnalogue
 from risk_engine.impact.module import GovernedHypothetical, LossEvidence
-from risk_engine.risk.module import CalibrationManifest, ModelManifest, SnapshotManifest
+from risk_engine.risk.module import (
+    CalibrationManifest,
+    ModelManifest,
+    SnapshotManifest,
+    SourceItemIdentity,
+)
 
 
 def _decimal_context() -> Context:
@@ -189,8 +194,8 @@ def build_signal_monitor(
             raise ValueError("duplicate Source Item identities")
         if any(
             source.snapshot_id not in snapshot_ids
-            or source.retrieved_at > as_of
-            or source.published_at > as_of
+            or source.retrieved_at.astimezone(UTC) > as_of.astimezone(UTC)
+            or source.published_at.astimezone(UTC) > as_of.astimezone(UTC)
             for source in sources
         ):
             raise ValueError("Source Item snapshot or availability disagrees")
@@ -199,7 +204,7 @@ def build_signal_monitor(
             source = indexed.get(signal.source_item_id)
             if source is None:
                 raise ValueError("Risk Signal Source Item is unavailable")
-            _validate_signal_manifests(signal, source, as_of)
+            _validate_signal_manifests(signal, source, indexed, as_of)
             rows.append(
                 SignalRow(
                     signal=signal,
@@ -635,15 +640,54 @@ def _manifest(value: str, record_type: type[R]) -> R | None:
     return record_type.model_validate(payload)
 
 
-def _validate_signal_manifests(signal: RiskSignal, source: SourceItem, as_of: datetime) -> None:
+def _source_identity_matches(identity: SourceItemIdentity, source: SourceItem) -> bool:
+    identity_metadata = identity.model_dump(exclude={"published_at", "retrieved_at"})
+    source_metadata = source.model_dump(
+        exclude={"text", "published_at", "retrieved_at"}
+    )
+    return (
+        identity_metadata == source_metadata
+        and identity.published_at.astimezone(UTC) == source.published_at.astimezone(UTC)
+        and identity.retrieved_at.astimezone(UTC) == source.retrieved_at.astimezone(UTC)
+    )
+
+
+def _validate_signal_manifests(
+    signal: RiskSignal,
+    source: SourceItem,
+    sources_by_id: dict[str, SourceItem],
+    as_of: datetime,
+) -> None:
     snapshot = _manifest(signal.versions.snapshot_version, SnapshotManifest)
     if snapshot is not None:
-        source_identity = source.model_dump(exclude={"text"})
+        identities = snapshot.source_items
+        member_ids = tuple(identity.source_item_id for identity in identities)
+        ordered_identities = tuple(
+            sorted(
+                identities,
+                key=lambda identity: (
+                    identity.published_at.astimezone(UTC),
+                    identity.source_item_id,
+                ),
+            )
+        )
         if (
-            len(snapshot.source_items) != 1
-            or snapshot.source_items[0].model_dump() != source_identity
+            len(set(member_ids)) != len(member_ids)
+            or identities != ordered_identities
+            or identities[0].source_item_id != signal.source_item_id
+            or signal.source_item_id != source.source_item_id
         ):
             raise ValueError("Risk Signal source manifest disagrees with supplied Source Item")
+        cutoff = as_of.astimezone(UTC)
+        for identity in identities:
+            member = sources_by_id.get(identity.source_item_id)
+            if (
+                member is None
+                or not _source_identity_matches(identity, member)
+                or identity.published_at.astimezone(UTC) > cutoff
+                or identity.retrieved_at.astimezone(UTC) > cutoff
+            ):
+                raise ValueError("Risk Signal source manifest disagrees with supplied Source Item")
     calibration = _manifest(signal.versions.calibration_version, CalibrationManifest)
     model = _manifest(signal.versions.model_version, ModelManifest)
     if calibration is not None:
