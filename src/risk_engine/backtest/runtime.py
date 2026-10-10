@@ -476,6 +476,8 @@ class ProductionCandidateFitter:
             or definition.content_hash != self._definition_hash
         ):
             raise ValueError("fitter configuration/definition changed")
+        if definition.frozen_at > configuration.frozen_at:
+            raise ValueError("runtime definition must be frozen by configuration frozen_at")
         lock = ModelLock.model_validate_json(
             _verified_bytes(definition.model_lock, definition.frozen_at)
         )

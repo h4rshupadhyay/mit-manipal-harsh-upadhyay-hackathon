@@ -31,6 +31,98 @@ def fitter_inputs(tmp_path, **kwargs):
     return fitter, candidate, training, backend
 
 
+@pytest.mark.parametrize("held_out", [False, True])
+@pytest.mark.parametrize("delay", [timedelta(0), timedelta(microseconds=1)])
+def test_runtime_definition_must_be_frozen_by_configuration_before_inference(
+    tmp_path, held_out, delay
+):
+    from risk_engine.backtest.runtime import ProductionCandidateFitter
+    from risk_engine.backtest.runtime_inputs import RuntimeDefinition
+    from tests.backtest.runtime_fixtures import seal
+
+    configuration, definition, index, locations, candidate, training = production_inputs(
+        tmp_path, count=4, policy_spec=policy_spec() if held_out else None
+    )
+    definition = seal(
+        RuntimeDefinition,
+        definition.model_dump(exclude={"content_hash"})
+        | {"frozen_at": configuration.frozen_at + delay},
+        "content_hash",
+    )
+    candidate = candidate.model_copy(update={"parameters": candidate.parameters | {
+        "runtime_definition_sha256": definition.content_hash
+    }})
+    configuration = configuration.model_copy(update={"candidates": (candidate,)})
+    backend = SimulationBackend()
+    root = tmp_path / "states"
+    fitter = ProductionCandidateFitter(
+        configuration=configuration, definition=definition, evidence_index=index,
+        model_locations=locations, artifact_root=root, backend=backend,
+    )
+    if delay:
+        with pytest.raises(ValueError, match="definition.*configuration"):
+            fitter.fit(candidate, training, as_of=training.cutoff)
+        assert backend.loads == 0
+        assert not root.exists()
+    else:
+        runtime = fitter.fit(candidate, training, as_of=training.cutoff)
+        assert runtime.manifest.candidate == candidate
+        loads = backend.loads
+        fitter.preflight_restore(runtime.manifest)
+        assert backend.loads == loads
+    fitter.close()
+
+
+def test_preflight_rejects_consistently_hashed_state_with_late_definition(tmp_path, monkeypatch):
+    from risk_engine.backtest.module import FittedManifest
+    from risk_engine.backtest.runtime import ProductionCandidateFitter
+    from risk_engine.backtest.runtime_state import (
+        FrozenRuntimeState,
+        load_runtime_state,
+        write_runtime_state,
+    )
+    from tests.backtest.runtime_fixtures import seal
+
+    fitter, candidate, training, _ = fitter_inputs(tmp_path)
+    runtime = fitter.fit(candidate, training, as_of=training.cutoff)
+    configuration = fitter.configuration.model_copy(update={
+        "frozen_at": fitter.definition.frozen_at - timedelta(microseconds=1)
+    })
+    state = load_runtime_state(runtime.manifest.artifacts[0], cutoff=training.cutoff)
+    state = seal(
+        FrozenRuntimeState,
+        state.model_dump(mode="json", exclude={"content_hash"})
+        | {"configuration_hash": content_hash(configuration)},
+        "content_hash",
+    )
+    artifact = write_runtime_state(state, tmp_path / "legacy-state")
+    locked = seal(
+        FittedManifest,
+        runtime.manifest.model_dump(exclude={"manifest_hash"}) | {
+            "configuration_hash": content_hash(configuration),
+            "artifacts": (artifact, fitter.definition.catalogue),
+        },
+        "manifest_hash",
+    )
+    locked.verify_artifacts()
+    assert state.runtime_definition_hash == candidate.parameters["runtime_definition_sha256"]
+    backend = SimulationBackend()
+    restorer = ProductionCandidateFitter(
+        configuration=configuration, definition=fitter.definition, evidence_index=None,
+        model_locations=fitter.model_locations, artifact_root=tmp_path / "unused", backend=backend,
+    )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid preregistration reached inference or state writes")
+
+    monkeypatch.setattr(backend, "load", forbidden)
+    monkeypatch.setattr("risk_engine.backtest.runtime.write_runtime_state", forbidden)
+    with pytest.raises(ValueError, match="definition.*configuration"):
+        restorer.preflight_restore(locked)
+    assert not (tmp_path / "unused").exists()
+    fitter.close()
+
+
 def test_production_fit_composes_real_ports_from_exact_training_membership(tmp_path, monkeypatch):
     from risk_engine.backtest.module import LocalArtifact
     from risk_engine.backtest.runtime_inputs import CaseEvidenceReference, RuntimeEvidenceIndex
