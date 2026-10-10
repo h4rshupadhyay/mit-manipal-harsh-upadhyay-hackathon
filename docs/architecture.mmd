@@ -1,0 +1,53 @@
+%% Artifact: financial-risk-architecture-v2; project-authored, MIT.
+%% Authored 2026-10-10; implementation baseline 6b87238 plus Tasks34–38.
+%% Render: Mermaid CLI11.12.0, Chrome headless, white background, scale2.
+%% Optional portable render (requires Chrome): npx --yes --package @mermaid-js/mermaid-cli@11.12.0 mmdc -i docs/architecture.mmd -o docs/architecture.png -w 2000 -s 2 -b white
+%% Source is an architecture description, not empirical runtime evidence.
+flowchart TB
+  subgraph local["One local Python deployment"]
+    providers["Optional acquisition adapters<br/>GDELT · local Social CSV<br/>GDELT network only on explicit refresh"]
+    data["1 · Data Module<br/>Explicit refresh / offline replay<br/>Normalization · story clustering · DuckDB"]
+    snapshot[("Immutable provider snapshot store<br/>Stored raw provider envelopes<br/>Hashes · terms · UTC times")]
+    risk["2 · Risk Engine<br/>Entity linking · local NLP<br/>Historical analogues · calibrated Confidence<br/>Reference Basket → Impact Score"]
+    stress["3 · Stress Engine<br/>Validated Joint Shock Vector<br/>Deterministic asset valuation<br/>Loss attribution · supported coverage"]
+  inputs["Versioned valuation inputs<br/>Synthetic Portfolio + MarketSnapshot<br/>Explicit StressScenario"]
+    backtest["4 · Backtest Module<br/>Nested chronological folds + embargo<br/>Candidate / held-out policy selection<br/>Training-only fit / locked restore<br/>One final attempt"]
+    runtime["ProductionCandidateFitter<br/>Verified local models + training evidence<br/>Immutable fitted runtime state"]
+    api["FastAPI · explicit AppContainer<br/>Signals · Stress Tests · Backtest evidence<br/>TriggerPolicy gates remain explicit"]
+  artifacts[("Versioned evaluation artifacts<br/>Selected configuration · Impact cutpoints<br/>Development audit · final report when run")]
+  dashboard["Streamlit · explicit DashboardEvidence<br/>Signal Monitor · Portfolio Stress · Backtest Evidence"]
+  manual_inputs["Project-authored manual inputs<br/>Fictional Source Items + scenarios"]
+  manual["Available offline manual exercise<br/>Hypothetical original + override scenarios<br/>No Risk Signal or automatic trigger"]
+  end
+
+  evidence["Empirical prerequisites still missing<br/>Required for empirical runtime<br/>Verified FinBERT / DeBERTa snapshots<br/>Historical evidence + independent labels"]
+
+  providers -. "explicit preparation" .-> data
+  data -->|"write snapshot"| snapshot
+  snapshot -->|"replay by snapshot ID"| data
+  data -->|"canonical Source Items"| risk
+  runtime -->|"fit / restore"| risk
+  risk -->|"Risk Signals"| api
+  api -->|"Request / override"| stress
+  inputs --> stress
+  stress -->|"StressResult"| api
+  dashboard -->|"explicit stress submission"| api
+  api -->|"StressTestResponse"| dashboard
+  backtest --> runtime
+  backtest -->|"scenario replay"| stress
+  backtest -->|"audited results"| artifacts
+  artifacts -->|"verified ready report"| api
+  manual --> stress
+  manual_inputs -->|"verified manual inputs"| manual
+
+  classDef module fill:#eaf2ff,stroke:#244e83,color:#122945,stroke-width:2px;
+  classDef storage fill:#edf7f0,stroke:#407354,color:#183a27,stroke-width:1.5px;
+  classDef interface fill:#f5f0fc,stroke:#776294,color:#322344,stroke-width:1.5px;
+  classDef missing fill:#fff1ec,stroke:#b65b38,color:#6a2910,stroke-width:2px;
+  classDef available fill:#fff8e5,stroke:#a88729,color:#4e3c0c,stroke-width:1.5px;
+  class data,risk,stress,backtest,runtime module;
+  class snapshot,artifacts storage;
+  class api,dashboard interface;
+  class evidence missing;
+  class providers,inputs,manual_inputs,manual available;
+  style local fill:#ffffff,stroke:#93a8bc,stroke-width:1.5px

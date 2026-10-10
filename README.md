@@ -16,6 +16,51 @@ The available demonstration exercises deterministic portfolio valuation from fro
 
 The Python code has four typed module seams: **Data** stores and replays immutable Source Item snapshots; **Risk Engine** links entities, interprets text, matches historical analogues, and estimates Impact and Confidence; **Stress Engine** applies complete factor shocks and attributes revaluation; **Backtest** implements chronological development selection and a locked final evaluation protocol. Financial calculations and policy gates are deterministic. The manual demo calls the production Stress Engine directly with governed hypothetical scenarios.
 
+![Financial Risk Engine architecture diagram](docs/architecture.png)
+
+Open the [full-size architecture PNG](docs/architecture.png) or [diagram source](docs/architecture.mmd).
+
+<details>
+<summary>Optional diagram regeneration and PNG metadata</summary>
+
+Regenerate with Mermaid CLI 11.12.0 and Chrome, then restore the PNG text
+metadata with Python Pillow. These are optional documentation tools and are not
+project runtime dependencies. If Mermaid CLI cannot find local Chrome, supply a
+Puppeteer config with its executable path using `mmdc -p`.
+
+```sh
+npx --yes --package @mermaid-js/mermaid-cli@11.12.0 mmdc \
+  -i docs/architecture.mmd -o docs/architecture.png -w 2000 -s 2 -b white
+```
+
+```sh
+python - <<'PY'
+from hashlib import sha256
+from pathlib import Path
+from PIL import Image, PngImagePlugin
+
+source = Path("docs/architecture.mmd")
+png = Path("docs/architecture.png")
+metadata = {
+    "Title": "Financial Risk Engine architecture",
+    "ArtifactVersion": "financial-risk-architecture-v2",
+    "Source": "docs/architecture.mmd",
+    "SourceSHA256": sha256(source.read_bytes()).hexdigest(),
+    "Author": "Harsh Upadhyay; AI-assisted rendering",
+    "AuthoredAt": "2026-10-10",
+    "SourceTerms": "MIT; project-authored diagram",
+    "Renderer": "Mermaid CLI 11.12.0; Chrome headless; scale 2; white background",
+    "ImplementationBaseline": "6b87238 plus Tasks 34-38",
+}
+info = PngImagePlugin.PngInfo()
+for key, value in metadata.items():
+    info.add_text(key, value)
+Image.open(png).convert("RGBA").save(png, pnginfo=info)
+PY
+```
+
+</details>
+
 Python 3.12, Pydantic, DuckDB, Polars, NumPy/SciPy/statsmodels/scikit-learn, PyTorch/Transformers, FastAPI, Streamlit, and Plotly are declared in [requirements.txt](requirements.txt). The FastAPI `create_app` function requires a supplied `AppContainer`; the Streamlit `render_app` function requires supplied `DashboardEvidence` for substantive views. They are composition interfaces, not a configured hosted service or a standalone full-replay launch command.
 
 [Approved design](docs/superpowers/specs/2026-10-04-financial-risk-engine-design.md) · [implementation plan](docs/superpowers/plans/2026-10-04-financial-risk-engine.md) · [canonical methodology](docs/methodology.md)
@@ -54,7 +99,7 @@ The scenario shocks are authored assumptions, not observed market moves or forec
 
 - Source code: this repository; [reproducible synthetic snapshot](data/manifests/demo-snapshot.json) and [golden Stress Results](tests/golden/demo-output.json)
 - [Methodology](docs/methodology.md), [results and readiness](docs/results.md), [third-party notices](THIRD_PARTY_NOTICES.md), and [MIT license](LICENSE)
-- Architecture diagram, presentation deck, and demo video: pending separate submission tasks
+- [Architecture diagram](docs/architecture.png) is available (source: [docs/architecture.mmd](docs/architecture.mmd)); presentation deck and demo video remain pending separate submission tasks
 
 ## AI Assistance Disclosure
 
